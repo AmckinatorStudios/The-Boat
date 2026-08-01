@@ -1,0 +1,90 @@
+name: CI
+
+# Игра проверяется НАСТОЯЩИМ движком и НАСТОЯЩИМ редактором: собираем SAGE
+# Engine из исходников, открываем этот проект редактором headless, проходим
+# игру автопилотом (теми же действиями, что и человек), собираем exe и
+# запускаем СОБРАННУЮ игру отдельным процессом. Скриншот прикладываем
+# артефактом — по нему видно, что мир не только «отработал», но и нарисовался.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  play-through:
+    name: Пройти игру в редакторе и в собранном exe (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout игры
+        uses: actions/checkout@v4
+        with:
+          path: game
+
+      - name: Checkout движка
+        uses: actions/checkout@v4
+        with:
+          repository: AmckinatorStudios/SAGE-Engine
+          path: engine
+
+      - name: Зависимости сборки
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake g++ libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev libgl1-mesa-dev xvfb
+
+      - name: Сборка движка
+        run: |
+          cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release -DSAGE_BUILD_SAMPLES=OFF
+          cmake --build engine/build -j"$(nproc)" --target SageEditor SagePlayer
+
+      # Редактор открывает проект, грузит сцену, играет фиксированным шагом
+      # (воспроизводимо, не зависит от загрузки машины), откатывает Play и
+      # собирает игру в exe — ровно то, что человек делает мышью.
+      - name: Редактор — открыть проект, пройти игру, собрать exe
+        run: |
+          cd engine/build/editor
+          xvfb-run -a env \
+            SAGE_EDITOR_OPEN_PROJECT="${GITHUB_WORKSPACE}/game" \
+            SAGE_EDITOR_PLAY_SECONDS=60 \
+            SAGE_EDITOR_BUILD_TO=theboat_dist \
+            SAGE_GAME_ARGS="autopilot=1" \
+            SAGE_SCREENSHOT_AT_FRAME=5 \
+            SAGE_SCREENSHOT_PATH="${GITHUB_WORKSPACE}/editor.png" \
+            ./SageEditor 2>&1 | tee "${GITHUB_WORKSPACE}/editor.log"
+          grep -q "SESSION: PASS" "${GITHUB_WORKSPACE}/editor.log"
+          grep -q "THEBOAT: ESCAPED" "${GITHUB_WORKSPACE}/editor.log"
+          test -x theboat_dist/TheBoat/TheBoat
+
+      # Собранный exe — отдельный процесс, реальное время, реальный рендер.
+      # Скриншот на позднем кадре доказывает, что мир нарисован, а не только
+      # посчитан.
+      - name: Собранная игра — пройти в реальном времени
+        run: |
+          cd engine/build/editor/theboat_dist/TheBoat
+          xvfb-run -a env \
+            SAGE_GAME_ARGS="autopilot=1" \
+            SAGE_SCREENSHOT_AT_FRAME=700 \
+            SAGE_SCREENSHOT_PATH="${GITHUB_WORKSPACE}/game.png" \
+            ./TheBoat 2>&1 | tee "${GITHUB_WORKSPACE}/game.log"
+          grep -q "THEBOAT: ESCAPED" "${GITHUB_WORKSPACE}/game.log"
+          # Ни одной ошибки движка или Lua за весь проход.
+          if grep -q "ERROR" "${GITHUB_WORKSPACE}/game.log"; then
+            grep "ERROR" "${GITHUB_WORKSPACE}/game.log"
+            exit 1
+          fi
+          # Кадр должен быть непустым: пустой PNG весит считаные байты.
+          test "$(stat -c%s "${GITHUB_WORKSPACE}/game.png")" -gt 10240
+
+      - name: Артефакты прогона
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playthrough
+          path: |
+            editor.png
+            game.png
+            editor.log
+            game.log
+          if-no-files-found: warn
