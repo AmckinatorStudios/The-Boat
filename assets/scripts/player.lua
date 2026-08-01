@@ -1,84 +1,83 @@
 -- ---------------------------------------------------------------------------
--- player.lua — игрок от первого лица: ходьба, прыжок, плавание, столкновения с
--- вокселями, добыча и установка блоков.
+-- player.lua — игрок от первого лица на палубе.
 --
--- Про камеру. Движок собирает поворот сущности как Rx*Ry*Rz, то есть тангаж
--- применяется В МИРОВЫХ осях — для вида от первого лица это даёт эффект
--- «наклонённого горизонта» при повороте. Поэтому игрок — ДВЕ сущности:
--- тело хранит рыскание, дочерняя камера — тангаж, а движок перемножает их
--- матрицы в правильном порядке (Ry * Rx). Иерархия сцены делает ровно то, что
--- в других движках приходится делать вручную кватернионом.
+-- Ключевое отличие от «игрока на земле»: позиция хранится в КОРАБЕЛЬНЫХ
+-- координатах. Палуба качается на волне, и если бы игрок жил в мировых, каждая
+-- волна отрывала бы его от пола — доски уехали вверх, а он остался. В
+-- корабельных же он просто стоит, а в мир его переводит та же матрица, что и
+-- саму палубу (см. Ship.LocalToWorld).
 --
--- Про столкновения. Игрок — коробка, мир — сетка; проверка идёт по осям
--- раздельно (X, потом Z, потом Y). Разделение по осям — не микрооптимизация:
--- именно оно даёт скольжение вдоль стены вместо залипания в угол.
+-- За бортом координаты становятся мировыми: там нет палубы, есть вода, и
+-- плавание считается относительно волны. Переход туда-обратно — единственное
+-- место, где две системы координат встречаются.
 --
--- Ввод модуль НЕ читает сам: он получает уже собранную таблицу намерений. Так
--- один и тот же код движения обслуживает и человека за мышью, и автопрогон в
--- CI (см. autopilot.lua) — проверяется настоящий игрок, а не его двойник.
+-- Про камеру: рыскание живёт на теле, тангаж — на дочерней камере. Движок
+-- собирает поворот как Rx*Ry*Rz, то есть тангаж в МИРОВЫХ осях, и одной
+-- сущностью горизонт кренило бы при повороте. Иерархия даёт правильный
+-- порядок (Ry * Rx) даром.
 -- ---------------------------------------------------------------------------
 local Blocks = require "blocks"
+local Ocean = require "ocean"
+local Ship = require "ship"
 
 local P = {}
 
--- Габариты и физика. Значения подобраны под блок 1x1x1: игрок чуть ниже двух
--- блоков, проходит в проём высотой 2 и запрыгивает ровно на один блок.
 local HALF_W   = 0.3
-local HEIGHT   = 1.8
-local EYE      = 1.62
-local GRAVITY  = -26.0
-local JUMP_V   = 8.6     -- высота прыжка v^2/2g ≈ 1.42 блока
-local WALK     = 4.3
-local SPRINT   = 6.0
-local SWIM     = 3.2
-local WATER_G  = -6.0
-local SWIM_UP  = 3.4
-local ACCEL_G  = 12.0    -- отзывчивость на земле
-local ACCEL_A  = 2.5     -- в воздухе управляемость хуже
+local HEIGHT   = 1.75
+local EYE      = 1.6
+local GRAVITY  = -22.0
+local JUMP_V   = 7.4
+local WALK     = 3.6      -- спокойный шаг: игра про то, чтобы никуда не спешить
+local SPRINT   = 5.4
+local SWIM     = 2.6
+local SWIM_UP  = 2.8
+local ACCEL_G  = 13.0
+local ACCEL_A  = 3.0
 local REACH    = 5.0
 local MAX_PITCH = 89.0
 
-local V, Inv, hooks
+local Inv, hooks
+local body, cam
 
-P.pos = {x = 0, y = 0, z = 0}
-P.vel = {x = 0, y = 0, z = 0}
+P.pos = {x = 0.0, y = 1.0, z = -1.0}   -- корабельные координаты (или мировые в воде)
+P.vel = {x = 0.0, y = 0.0, z = 0.0}
 P.yaw, P.pitch = 0.0, 0.0
 P.onGround = false
-P.inWater = false
-P.headInWater = false
-P.fallDistance = 0.0
-P.target = nil        -- блок под прицелом (для HUD и подсветки)
+P.overboard = false      -- за бортом: координаты мировые, вокруг вода
+P.target = nil           -- блок палубы под прицелом
+P.aimDebris = nil        -- обломок под прицелом (важнее блока)
 P.breakProgress = 0.0
-P.alive = true
-
-local body, cam
+P.breakTarget = nil
+P.bob = 0.0
 
 local function rad(d) return d * math.pi / 180.0 end
 
--- Направление взгляда, согласованное с порядком поворотов движка (см. шапку).
 function P.Forward()
     local cp = math.cos(rad(P.pitch))
     return -cp * math.sin(rad(P.yaw)), math.sin(rad(P.pitch)), -cp * math.cos(rad(P.yaw))
 end
 
-function P.ForwardFlat()
-    return -math.sin(rad(P.yaw)), 0.0, -math.cos(rad(P.yaw))
+function P.ForwardFlat() return -math.sin(rad(P.yaw)), 0.0, -math.cos(rad(P.yaw)) end
+function P.RightFlat() return math.cos(rad(P.yaw)), 0.0, -math.sin(rad(P.yaw)) end
+
+-- Глаз в МИРОВЫХ координатах — им целятся в мусор и его слушает звук.
+function P.WorldEye()
+    if P.overboard then
+        return P.pos.x, P.pos.y + EYE, P.pos.z
+    end
+    return Ship.LocalToWorld(P.pos.x, P.pos.y + EYE, P.pos.z)
 end
 
-function P.RightFlat()
-    return math.cos(rad(P.yaw)), 0.0, -math.sin(rad(P.yaw))
+function P.WorldPos()
+    if P.overboard then return P.pos.x, P.pos.y, P.pos.z end
+    return Ship.LocalToWorld(P.pos.x, P.pos.y, P.pos.z)
 end
 
-function P.EyePosition()
-    return P.pos.x, P.pos.y + EYE, P.pos.z
-end
-
-local function boxBlockedAt(x, y, z)
-    return V.BoxBlocked(x - HALF_W, y, z - HALF_W, x + HALF_W, y + HEIGHT, z + HALF_W)
+local function deckBlocked(x, y, z)
+    return Ship.BoxBlocked(x - HALF_W, y, z - HALF_W, x + HALF_W, y + HEIGHT, z + HALF_W)
 end
 
 function P.Init(deps)
-    V = deps.voxel
     Inv = deps.inventory
     hooks = deps.hooks or {}
 
@@ -87,75 +86,86 @@ function P.Init(deps)
     if body == nil or cam == nil then
         error("player.lua: в сцене нет сущностей 'Player' и/или 'Player Camera'")
     end
+    cam.Transform.Position = Vec3(0.0, EYE, 0.0)
 
-    local s = V.Spawn()
-    P.pos.x, P.pos.y, P.pos.z = s.x + 0.5, s.y, s.z + 0.5
-    -- Спавн строго над твердью: если пляж почему-то оказался ниже, поднимаем
-    -- игрока, а не роняем его сквозь мир на первом же кадре.
-    while boxBlockedAt(P.pos.x, P.pos.y, P.pos.z) and P.pos.y < V.SIZE_Y - 3 do
-        P.pos.y = P.pos.y + 1
-    end
-    P.yaw, P.pitch = 180.0, -8.0 -- лицом к океану (на юг, +Z)
-
-    local ct = cam.Transform
-    ct.Position = Vec3(0.0, EYE, 0.0)
+    -- Встаём на НОСУ, лицом вперёд: первое, что видит игрок, — открытое море
+    -- до горизонта, а не мачта в упор и не стена каюты. (Нос смотрит в +Z, а
+    -- рыскание 0 — это взгляд в -Z, поэтому 180.)
+    P.pos.x, P.pos.y, P.pos.z = 0.0, 1.0, 5.0
+    P.yaw, P.pitch = 180.0, -3.0
     P.Apply()
 end
 
--- Переносит состояние игрока в сущности сцены. Отдельной функцией, потому что
--- звать её надо и после телепорта/респавна, а не только в конце кадра.
 function P.Apply()
+    local wx, wy, wz = P.WorldPos()
     local bt = body.Transform
-    bt.Position = Vec3(P.pos.x, P.pos.y, P.pos.z)
-    bt.Rotation = Vec3(0.0, P.yaw, 0.0)
-    cam.Transform.Rotation = Vec3(P.pitch, 0.0, 0.0)
+    local p = bt.Position
+    p.x, p.y, p.z = wx, wy + P.bob, wz
+    bt.Rotation.y = P.yaw
+
+    local cr = cam.Transform.Rotation
+    cr.x = P.pitch
+    -- Лёгкий крен камеры вслед за кораблём: полный кренит горизонт и укачивает,
+    -- нулевой убивает ощущение лодки. Треть — то, на чём это читается и не мешает.
+    cr.z = P.overboard and 0.0 or (Ship.roll * 0.3)
 end
 
--- Прямая установка взгляда. Нужна не только автопрогону: так же работают
--- катсцены и «повернуть игрока к говорящему» — мышь для этого не годится.
 function P.SetLook(yaw, pitch)
     P.yaw = yaw % 360.0
     P.pitch = math.max(-MAX_PITCH, math.min(MAX_PITCH, pitch))
 end
 
--- Куда смотреть, чтобы прицел попал в точку мира (градусы рыскания/тангажа).
 function P.LookAnglesTo(tx, ty, tz)
-    local ex, ey, ez = P.EyePosition()
+    local ex, ey, ez = P.WorldEye()
     local dx, dy, dz = tx - ex, ty - ey, tz - ez
     local flat = math.sqrt(dx * dx + dz * dz)
-    local yaw = math.deg(math.atan(-dx, -dz))
-    local pitch = math.deg(math.atan(dy, flat))
-    return yaw, pitch
+    return math.deg(math.atan(-dx, -dz)), math.deg(math.atan(dy, flat))
 end
 
-function P.Teleport(x, y, z)
-    P.pos.x, P.pos.y, P.pos.z = x, y, z
+-- --- Переход палуба <-> вода ------------------------------------------------
+local function goOverboard()
+    if P.overboard then return end
+    local wx, wy, wz = P.WorldPos()
+    P.pos.x, P.pos.y, P.pos.z = wx, wy, wz
     P.vel.x, P.vel.y, P.vel.z = 0, 0, 0
-    P.fallDistance = 0
-    P.Apply()
+    P.overboard = true
+    if hooks.OnOverboard then hooks.OnOverboard() end
 end
+
+local function climbAboard()
+    if not P.overboard then return end
+    -- Обратный перевод: мир -> корабль. Крен мал, поэтому обратную матрицу не
+    -- строим — вычесть положение корпуса достаточно, а полблока погрешности на
+    -- краю палубы съедает подъём на ступеньку.
+    P.pos.x = P.pos.x - Ship.pos.x
+    P.pos.y = P.pos.y - Ship.pos.y
+    P.pos.z = P.pos.z - Ship.pos.z
+    P.vel.x, P.vel.y, P.vel.z = 0, 0, 0
+    P.overboard = false
+    if hooks.OnAboard then hooks.OnAboard() end
+end
+
+P.ClimbAboard = climbAboard
 
 -- --- Движение ---------------------------------------------------------------
-local function moveAxis(axis, amount)
-    if amount == 0.0 then return false end
-    local p = P.pos
-    local old = p[axis]
-    p[axis] = old + amount
-    if boxBlockedAt(p.x, p.y, p.z) then
-        p[axis] = old
-        return true -- упёрлись
+-- Вытолкнуть игрока, если он оказался ВНУТРИ геометрии. Так бывает: палуба
+-- перестраивается прямо под ногами, и блок можно поставить туда, где стоишь.
+-- Застрявший навсегда игрок — худшее, что может случиться в игре, из которой
+-- нельзя проиграть, поэтому выход есть всегда: сперва вверх, а если и там
+-- сплошняк — на нос, на свободное место.
+local function unstick(p)
+    if not deckBlocked(p.x, p.y, p.z) then return end
+    for _ = 1, 12 do
+        p.y = p.y + 0.25
+        if not deckBlocked(p.x, p.y, p.z) then return end
     end
-    return false
+    p.x, p.y, p.z = 0.0, 1.0, 5.0
 end
 
-local function updateMovement(dt, input)
+local function moveOnDeck(dt, input)
     local p, v = P.pos, P.vel
+    unstick(p)
 
-    P.inWater = V.BoxInLiquid(p.x - HALF_W, p.y, p.z - HALF_W,
-                              p.x + HALF_W, p.y + HEIGHT * 0.5, p.z + HALF_W)
-    P.headInWater = V.IsLiquid(math.floor(p.x), math.floor(p.y + EYE), math.floor(p.z))
-
-    -- Желаемое направление в плоскости XZ.
     local fx, _, fz = P.ForwardFlat()
     local rx, _, rz = P.RightFlat()
     local wx = fx * input.moveF + rx * input.moveR
@@ -164,44 +174,41 @@ local function updateMovement(dt, input)
     if wlen > 0.0001 then wx, wz = wx / wlen, wz / wlen end
 
     local speed = WALK
-    if P.inWater then speed = SWIM
-    elseif input.sprint and input.moveF > 0 then speed = SPRINT end
-    if input.crouch and not P.inWater then speed = speed * 0.4 end
+    if input.sprint and input.moveF > 0 then speed = SPRINT end
+    if input.crouch then speed = speed * 0.45 end
 
-    local accel = (P.onGround or P.inWater) and ACCEL_G or ACCEL_A
+    local accel = P.onGround and ACCEL_G or ACCEL_A
     local blend = math.min(1.0, accel * dt)
     v.x = v.x + (wx * speed - v.x) * blend
     v.z = v.z + (wz * speed - v.z) * blend
 
-    -- Вертикаль: в воде — вязкое всплытие, на суше — обычная гравитация.
-    if P.inWater then
-        v.y = v.y + WATER_G * dt
-        if input.jump then v.y = SWIM_UP end
-        v.y = v.y * (1.0 - math.min(1.0, 3.0 * dt))
-        P.fallDistance = 0.0
-    else
-        if input.jump and P.onGround then
-            v.y = JUMP_V
-            P.onGround = false
-        end
-        v.y = v.y + GRAVITY * dt
-        if v.y < -60.0 then v.y = -60.0 end
+    if input.jump and P.onGround then
+        v.y = JUMP_V
+        P.onGround = false
     end
+    v.y = v.y + GRAVITY * dt
+    if v.y < -40.0 then v.y = -40.0 end
 
-    -- Горизонталь: X и Z по отдельности — так игрок скользит вдоль стены.
-    local hitX = moveAxis("x", v.x * dt)
-    local hitZ = moveAxis("z", v.z * dt)
+    -- По осям раздельно: так игрок скользит вдоль борта, а не залипает в углу.
+    local ox = p.x
+    p.x = ox + v.x * dt
+    local hitX = deckBlocked(p.x, p.y, p.z)
+    if hitX then p.x = ox end
+    local oz = p.z
+    p.z = oz + v.z * dt
+    local hitZ = deckBlocked(p.x, p.y, p.z)
+    if hitZ then p.z = oz end
 
-    -- Автопрыжок на ступеньку в один блок. Без него любой берег и любая
-    -- лестница из блоков требовали бы ручного прыжка на каждый шаг.
-    if (hitX or hitZ) and P.onGround and not P.inWater and wlen > 0.0001 then
-        local stepUp = 1.02
+    -- Ступенька в блок: подняться на леер или на надстройку без прыжка.
+    if (hitX or hitZ) and P.onGround and wlen > 0.0001 then
         local savedY = p.y
-        p.y = p.y + stepUp
-        if not boxBlockedAt(p.x, p.y, p.z) then
-            local sx = moveAxis("x", v.x * dt)
-            local sz = moveAxis("z", v.z * dt)
-            if sx and sz then p.y = savedY else P.onGround = false end
+        p.y = p.y + 1.02
+        if not deckBlocked(p.x, p.y, p.z) then
+            local nx = p.x + v.x * dt
+            if not deckBlocked(nx, p.y, p.z) then p.x = nx end
+            local nz = p.z + v.z * dt
+            if not deckBlocked(p.x, p.y, nz) then p.z = nz end
+            P.onGround = false
         else
             p.y = savedY
         end
@@ -209,43 +216,133 @@ local function updateMovement(dt, input)
     if hitX then v.x = 0.0 end
     if hitZ then v.z = 0.0 end
 
-    -- Вертикаль и опора.
-    local dy = v.y * dt
     local before = p.y
-    p.y = before + dy
-    if boxBlockedAt(p.x, p.y, p.z) then
+    p.y = before + v.y * dt
+    if deckBlocked(p.x, p.y, p.z) then
         p.y = before
-        if dy < 0.0 then
-            -- Приземление: сначала сообщаем о падении, потом гасим счётчик.
-            if P.fallDistance > 3.0 and hooks.OnFall then hooks.OnFall(P.fallDistance) end
-            P.fallDistance = 0.0
-            P.onGround = true
-        end
+        if v.y < 0.0 then P.onGround = true end
         v.y = 0.0
     else
         P.onGround = false
-        if dy < 0.0 then P.fallDistance = P.fallDistance - dy end
     end
 
-    -- Границы мира: за карту не выпускаем (там нет ни блоков, ни дна).
-    p.x = math.max(1.0, math.min(V.SIZE_X - 1.0, p.x))
-    p.z = math.max(1.0, math.min(V.SIZE_Z - 1.0, p.z))
-    if p.y < 0.0 then p.y = 0.0; v.y = 0.0 end
+    -- Шаг за борт: под ногами нет корабля и мы ниже палубы — за борт.
+    local wx2, wy2, wz2 = Ship.LocalToWorld(p.x, p.y, p.z)
+    if wy2 < Ocean.Height(wx2, wz2) - 0.35 then goOverboard() end
+
+    -- Покачивание камеры на ходу. Мелочь, ради которой палуба ощущается палубой.
+    local moving = P.onGround and (math.abs(v.x) + math.abs(v.z)) > 0.4
+    local targetBob = moving and math.sin(Ocean.Time() * 9.0) * 0.045 or 0.0
+    P.bob = P.bob + (targetBob - P.bob) * math.min(1.0, dt * 8.0)
 end
 
--- --- Взаимодействие с миром -------------------------------------------------
-local function updateInteraction(dt, input)
-    local ex, ey, ez = P.EyePosition()
+local function swim(dt, input)
+    local p, v = P.pos, P.vel
+    local surface = Ocean.Height(p.x, p.z)
+
+    local fx, _, fz = P.ForwardFlat()
+    local rx, _, rz = P.RightFlat()
+    local wx = fx * input.moveF + rx * input.moveR
+    local wz = fz * input.moveF + rz * input.moveR
+    local wlen = math.sqrt(wx * wx + wz * wz)
+    if wlen > 0.0001 then wx, wz = wx / wlen, wz / wlen end
+
+    v.x = v.x + (wx * SWIM - v.x) * math.min(1.0, 4.0 * dt)
+    v.z = v.z + (wz * SWIM - v.z) * math.min(1.0, 4.0 * dt)
+
+    -- Выталкивание к поверхности: утонуть в этой игре нельзя, можно только
+    -- промокнуть. Тонущий игрок — это паника, а игра про обратное.
+    local depth = surface - (p.y + HEIGHT * 0.6)
+    v.y = v.y + depth * 14.0 * dt - 2.0 * dt
+    if input.jump then v.y = v.y + SWIM_UP * dt * 4.0 end
+    v.y = v.y - v.y * math.min(1.0, 3.0 * dt)
+
+    p.x = p.x + v.x * dt
+    p.y = p.y + v.y * dt
+    p.z = p.z + v.z * dt
+
+    P.onGround = false
+    P.bob = 0.0
+
+    -- Забраться назад. Проверять «есть ли блок ровно там, где я» бесполезно:
+    -- пловец висит в воде НИЖЕ палубы, и в его собственной ячейке корабля нет
+    -- по определению. Правильный вопрос другой — оказался ли он в ГОРИЗОНТАЛЬНЫХ
+    -- границах корпуса; если да, значит он у самого борта и должен вылезти
+    -- наверх. Иначе выбраться из воды было бы нельзя вообще.
+    local lx = math.floor(p.x - Ship.pos.x)
+    local lz = math.floor(p.z - Ship.pos.z)
+    -- Ищем САМУЮ НИЗКУЮ площадку, на которой помещается человек, а не самый
+    -- высокий блок в колонке. Иначе пловец, подплывший к мачте или к каюте,
+    -- телепортировался бы на клотик или на крышу — вылезать из воды надо на
+    -- палубу.
+    local topY = nil
+    for y = Ship.MIN_Y, Ship.MAX_Y do
+        if Ship.IsSolid(lx, y, lz)
+           and not Ship.IsSolid(lx, y + 1, lz) and not Ship.IsSolid(lx, y + 2, lz) then
+            topY = y
+            break
+        end
+    end
+    -- Влезть можно только на НИЗКИЙ край — палубу или леер. На стену каюты в
+    -- три блока из воды не подтягиваются: пловец, доплывший до кормы, иначе
+    -- телепортировался бы на крышу, и вылезать «на борт» означало бы оказаться
+    -- на верхотуре в двух шагах от того места, куда он плыл.
+    if topY ~= nil and topY <= 1 then
+        climbAboard()
+        P.pos.x, P.pos.z = lx + 0.5, lz + 0.5
+        P.pos.y = topY + 1.0
+        P.onGround = true
+    end
+end
+
+-- --- Кирка и стройка --------------------------------------------------------
+-- Куда встанет блок. Два случая, и второй — не мелочь, а единственный способ
+-- расширить палубу.
+--
+-- Луч попал в блок — новый встаёт в пустую ячейку ПЕРЕД ним, как в любой
+-- воксельной игре. Но пристроить доску вбок от края палубы так нельзя в
+-- принципе: чтобы луч вошёл в наружную грань крайней доски, целиться нужно
+-- снаружи, то есть с воды, а игрок стоит на палубе. Поэтому второй случай:
+-- луч не встретил ничего и ушёл в воду — берём точку, где он пересекает
+-- плоскость палубы, и ставим туда, если рядом есть корабль. Это ровно тот
+-- жест, которого ждёшь: «щёлкнуть по воде у борта, чтобы настелить доску».
+local function placementCell(hit, ox, oy, oz, dx, dy, dz)
+    if hit then return hit.px, hit.py, hit.pz end
+    if dy >= -0.05 then return nil end -- смотрим вверх/вдоль: воды не достанем
+
+    local deckTop = 1.0 -- верх слоя палубы (блок ячейки y=0 занимает 0..1)
+    local t = (deckTop - oy) / dy
+    if t <= 0.0 or t > REACH then return nil end
+    return math.floor(ox + dx * t), 0, math.floor(oz + dz * t)
+end
+
+local function interact(dt, input)
+    local ex, ey, ez = P.WorldEye()
     local dx, dy, dz = P.Forward()
-    local hit = V.Raycast(ex, ey, ez, dx, dy, dz, REACH)
+
+    -- Мусор важнее палубы: багор — основной жест игры, и промахиваться им по
+    -- собственной доске обиднее, чем не попасть по доске.
+    P.aimDebris = hooks.AimDebris and hooks.AimDebris(ex, ey, ez, dx, dy, dz) or nil
+
+    -- Луч по сетке идёт в КОРАБЕЛЬНЫХ координатах, а смотрит игрок в мировых:
+    -- направление нужно повернуть обратно на крен корпуса, иначе на волне
+    -- прицел уезжает с блока уже на паре метров.
+    local ldx, ldy, ldz = Ship.WorldDirToLocal(dx, dy, dz)
+    local hit = nil
+    if not P.overboard then
+        hit = Ship.Raycast(P.pos.x, P.pos.y + EYE, P.pos.z, ldx, ldy, ldz, REACH)
+    end
     P.target = hit
 
-    if not hit then
-        P.breakProgress = 0.0
-    elseif input.breakHeld then
-        -- Прогресс привязан к КОНКРЕТНОМУ блоку: перевёл прицел — начал заново.
-        if P.breakTarget ~= nil and (P.breakTarget.x ~= hit.x or P.breakTarget.y ~= hit.y
-                                     or P.breakTarget.z ~= hit.z) then
+    if input.usePressed and P.aimDebris and hooks.CollectDebris then
+        hooks.CollectDebris(P.aimDebris)
+        P.aimDebris = nil
+        return
+    end
+
+    if hit and input.breakHeld then
+        if P.breakTarget and (P.breakTarget.x ~= hit.x or P.breakTarget.y ~= hit.y
+                              or P.breakTarget.z ~= hit.z) then
             P.breakProgress = 0.0
         end
         P.breakTarget = {x = hit.x, y = hit.y, z = hit.z}
@@ -254,11 +351,8 @@ local function updateInteraction(dt, input)
             P.breakProgress = P.breakProgress + dt
             if P.breakProgress >= hardness then
                 P.breakProgress = 0.0
-                local drop = V.BreakBlock(hit.x, hit.y, hit.z)
-                if drop then
-                    Inv.Add(drop, 1)
-                    if hooks.OnBreak then hooks.OnBreak(hit.x, hit.y, hit.z, hit.id, drop) end
-                end
+                local got = Ship.BreakBlock(hit.x, hit.y, hit.z)
+                if got and hooks.OnBreak then hooks.OnBreak(hit.x, hit.y, hit.z, got) end
             end
         end
     else
@@ -266,17 +360,15 @@ local function updateInteraction(dt, input)
         P.breakTarget = nil
     end
 
-    if input.placePressed and hit then
+    if input.placePressed and not P.overboard then
         local id = Inv.SelectedBlock()
-        if id and Inv.Count(id) > 0 then
-            local bx, by, bz = hit.px, hit.py, hit.pz
-            -- В себя блок не ставим: иначе игрок замуровывается в собственной
-            -- голове и остаётся в твёрдом теле навсегда.
+        local bx, by, bz = placementCell(hit, P.pos.x, P.pos.y + EYE, P.pos.z, ldx, ldy, ldz)
+        if bx and id and Inv.Count(id) > 0 and Blocks.IsPlaceable(id) then
             local p = P.pos
             local intersects = not (bx + 1 <= p.x - HALF_W or bx >= p.x + HALF_W or
                                     bz + 1 <= p.z - HALF_W or bz >= p.z + HALF_W or
                                     by + 1 <= p.y or by >= p.y + HEIGHT)
-            if not intersects and V.PlaceBlock(bx, by, bz, id) then
+            if not intersects and Ship.PlaceBlock(bx, by, bz, id) then
                 Inv.Remove(id, 1)
                 if hooks.OnPlace then hooks.OnPlace(bx, by, bz, id) end
             end
@@ -285,13 +377,11 @@ local function updateInteraction(dt, input)
 end
 
 function P.Update(dt, input)
-    if not P.alive then return end
-
     P.yaw = (P.yaw - input.lookX) % 360.0
     P.pitch = math.max(-MAX_PITCH, math.min(MAX_PITCH, P.pitch + input.lookY))
 
-    updateMovement(dt, input)
-    updateInteraction(dt, input)
+    if P.overboard then swim(dt, input) else moveOnDeck(dt, input) end
+    interact(dt, input)
     P.Apply()
 end
 

@@ -1,55 +1,70 @@
 -- ---------------------------------------------------------------------------
--- blocks.lua — реестр типов блоков мира.
+-- blocks.lua — реестр всего, что игрок может держать в руках или поставить на
+-- палубу: блоки корабля и предметы (припасы, еда, вода).
 --
--- Единственное место, где описано, что такое «песок» или «бревно»: цвет, можно
--- ли сквозь него пройти, сколько секунд его ломать, что из него падает. Всё
--- остальное (генерация, рендер, инвентарь, крафт) читает мир ЧЕРЕЗ этот реестр
--- и про конкретные блоки ничего не знает — добавить новый блок значит дописать
--- сюда строчку, а не править пять файлов.
---
--- Модуль движка: подключается через require (см. ScriptEngine::AddScriptSearchPath).
+-- Блок и предмет — одна таблица, а не две. Разница между ними ровно одна:
+-- у блока есть поле place (его можно поставить), у предмета нет. Разводить их
+-- по разным реестрам значило бы дублировать имена, цвета и всю работу с
+-- инвентарём ради одного булева поля.
 -- ---------------------------------------------------------------------------
 local Blocks = {}
 
+-- --- Блоки корабля (ставятся на палубу) ------------------------------------
 Blocks.AIR      = 0
-Blocks.WATER    = 1
-Blocks.SAND     = 2
-Blocks.DIRT     = 3
-Blocks.GRASS    = 4
-Blocks.STONE    = 5
-Blocks.LOG      = 6
-Blocks.LEAVES   = 7
-Blocks.PLANK    = 8
-Blocks.IRON     = 9
-Blocks.BUSH     = 10
-Blocks.CAMPFIRE = 11
-Blocks.SAIL     = 12
+Blocks.PLANK    = 1   -- палуба
+Blocks.BEAM     = 2   -- балка/борт
+Blocks.RAIL     = 3   -- леер по краю палубы
+Blocks.WALL     = 4   -- стена каюты
+Blocks.ROOF     = 5   -- крыша
+Blocks.MAST     = 6   -- мачта
+Blocks.SAIL     = 7   -- парус
+Blocks.BARREL   = 8   -- бочка (декор/хранение)
+Blocks.CRATE    = 9   -- ящик
+Blocks.LANTERN  = 10  -- фонарь: светит ночью
+Blocks.PURIFIER = 11  -- опреснитель: делает пресную воду
+Blocks.NET      = 12  -- сеть-уловитель: сама притягивает мусор
+Blocks.PLANTER  = 13  -- грядка
 
--- solid   — держит игрока и останавливает луч кирки
--- opaque  — закрывает соседа: невидимые грани не порождают сущностей рендера
--- liquid  — в нём плавают и тонут
--- hard    — секунд ломать голыми руками (nil — неразрушим)
--- drop    — что попадает в инвентарь (по умолчанию — сам блок)
+-- --- Предметы (только в инвентаре) -----------------------------------------
+Blocks.SCRAP    = 20  -- доски и щепа с воды
+Blocks.ROPE     = 21
+Blocks.CLOTH    = 22
+Blocks.PLASTIC  = 23
+Blocks.FISH     = 24
+Blocks.SEAWEED  = 25
+Blocks.WATER    = 26  -- пресная вода
+Blocks.ROD      = 27  -- удочка (инструмент)
+
 local D = {
-    [Blocks.WATER]    = {name = "Вода",    color = {0.16, 0.38, 0.62}, solid = false, opaque = false, liquid = true},
-    [Blocks.SAND]     = {name = "Песок",   color = {0.85, 0.78, 0.55}, solid = true,  opaque = true,  hard = 0.5},
-    [Blocks.DIRT]     = {name = "Земля",   color = {0.45, 0.33, 0.22}, solid = true,  opaque = true,  hard = 0.6},
-    [Blocks.GRASS]    = {name = "Трава",   color = {0.32, 0.55, 0.26}, solid = true,  opaque = true,  hard = 0.6,
-                         drop = Blocks.DIRT},
-    [Blocks.STONE]    = {name = "Камень",  color = {0.46, 0.46, 0.49}, solid = true,  opaque = true,  hard = 1.6},
-    [Blocks.LOG]      = {name = "Бревно",  color = {0.42, 0.29, 0.16}, solid = true,  opaque = true,  hard = 1.0},
-    [Blocks.LEAVES]   = {name = "Листва",  color = {0.24, 0.47, 0.22}, solid = true,  opaque = true,  hard = 0.25},
-    [Blocks.PLANK]    = {name = "Доска",   color = {0.72, 0.55, 0.33}, solid = true,  opaque = true,  hard = 0.8},
-    [Blocks.IRON]     = {name = "Руда",    color = {0.62, 0.52, 0.42}, solid = true,  opaque = true,  hard = 2.6},
-    [Blocks.BUSH]     = {name = "Куст",    color = {0.55, 0.24, 0.30}, solid = false, opaque = false, hard = 0.15},
-    [Blocks.CAMPFIRE] = {name = "Костёр",  color = {0.85, 0.42, 0.16}, solid = true,  opaque = true,  hard = 0.4},
-    [Blocks.SAIL]     = {name = "Парус",   color = {0.88, 0.86, 0.80}, solid = true,  opaque = true,  hard = 0.4},
+    -- solid — держит игрока (леер тоже: он ограждение, сквозь него не ходят,
+    -- иначе борта не спасают от падения за борт); opaque — закрывает грань
+    -- соседа, и вот этого леер как раз не делает: сквозь него видно воду.
+    [Blocks.PLANK]    = {name = "Доска",       color = {0.74, 0.49, 0.25}, solid = true,  opaque = true,  hard = 0.55, place = true},
+    [Blocks.BEAM]     = {name = "Балка",       color = {0.42, 0.26, 0.14}, solid = true,  opaque = true,  hard = 0.9,  place = true},
+    [Blocks.RAIL]     = {name = "Леер",        color = {0.56, 0.35, 0.18}, solid = true,  opaque = false, hard = 0.35, place = true},
+    [Blocks.WALL]     = {name = "Стена",       color = {0.82, 0.66, 0.42}, solid = true,  opaque = true,  hard = 0.7,  place = true},
+    [Blocks.ROOF]     = {name = "Крыша",       color = {0.46, 0.22, 0.17}, solid = true,  opaque = true,  hard = 0.7,  place = true},
+    [Blocks.MAST]     = {name = "Мачта",       color = {0.38, 0.23, 0.12}, solid = true,  opaque = true,  hard = 1.1,  place = true},
+    [Blocks.SAIL]     = {name = "Парус",       color = {0.97, 0.94, 0.86}, solid = true,  opaque = true,  hard = 0.4,  place = true},
+    [Blocks.BARREL]   = {name = "Бочка",       color = {0.52, 0.30, 0.15}, solid = true,  opaque = true,  hard = 0.6,  place = true},
+    [Blocks.CRATE]    = {name = "Ящик",        color = {0.70, 0.53, 0.27}, solid = true,  opaque = true,  hard = 0.6,  place = true},
+    [Blocks.LANTERN]  = {name = "Фонарь",      color = {1.00, 0.78, 0.42}, solid = true,  opaque = false, hard = 0.4,  place = true, light = true},
+    [Blocks.PURIFIER] = {name = "Опреснитель", color = {0.55, 0.62, 0.66}, solid = true,  opaque = true,  hard = 0.8,  place = true},
+    [Blocks.NET]      = {name = "Сеть",        color = {0.72, 0.70, 0.52}, solid = true,  opaque = false, hard = 0.35, place = true},
+    [Blocks.PLANTER]  = {name = "Грядка",      color = {0.30, 0.42, 0.24}, solid = true,  opaque = true,  hard = 0.5,  place = true},
+
+    -- предметы
+    [Blocks.SCRAP]    = {name = "Обломки",     color = {0.60, 0.44, 0.28}},
+    [Blocks.ROPE]     = {name = "Верёвка",     color = {0.78, 0.70, 0.48}},
+    [Blocks.CLOTH]    = {name = "Ткань",       color = {0.88, 0.86, 0.80}},
+    [Blocks.PLASTIC]  = {name = "Пластик",     color = {0.62, 0.78, 0.80}},
+    [Blocks.FISH]     = {name = "Рыба",        color = {0.68, 0.74, 0.80}, food = 30.0},
+    [Blocks.SEAWEED]  = {name = "Водоросли",   color = {0.30, 0.52, 0.32}, food = 12.0},
+    [Blocks.WATER]    = {name = "Вода",        color = {0.55, 0.80, 0.92}, drink = 35.0},
+    [Blocks.ROD]      = {name = "Удочка",      color = {0.72, 0.62, 0.40}, tool = true},
 }
 
--- Воздух описан отдельно: у него нет ни цвета, ни прочности, и попытка
--- обратиться к его полям — почти всегда ошибка в вызывающем коде, а не
--- «пустой блок». Пусть падает громко, а не тихо возвращает nil-цвет.
-local AIR_DEF = {name = "Воздух", solid = false, opaque = false}
+local AIR_DEF = {name = "Пусто", solid = false, opaque = false}
 
 function Blocks.Def(id)
     if id == Blocks.AIR then return AIR_DEF end
@@ -71,33 +86,41 @@ function Blocks.IsOpaque(id)
     return d ~= nil and d.opaque == true
 end
 
-function Blocks.IsLiquid(id)
+function Blocks.IsPlaceable(id)
     local d = D[id]
-    return d ~= nil and d.liquid == true
+    return d ~= nil and d.place == true
 end
 
--- Секунд на разрушение голыми руками; nil — блок не ломается вовсе.
+function Blocks.IsLight(id)
+    local d = D[id]
+    return d ~= nil and d.light == true
+end
+
 function Blocks.Hardness(id)
     local d = D[id]
     return d and d.hard
 end
 
--- Что попадёт в инвентарь при разрушении (трава даёт землю, остальное — себя).
-function Blocks.Drop(id)
+function Blocks.Food(id)
     local d = D[id]
-    if not d then return nil end
-    return d.drop or id
+    return d and d.food
+end
+
+function Blocks.Drink(id)
+    local d = D[id]
+    return d and d.drink
 end
 
 function Blocks.Color(id)
     local d = Blocks.Def(id)
-    if not d or not d.color then return Vec3(1, 0, 1) end -- кричащая «нет текстуры»
+    if not d or not d.color then return Vec3(1, 0, 1) end
     return Vec3(d.color[1], d.color[2], d.color[3])
 end
 
--- Блоки, которые можно СТАВИТЬ из хотбара (вода и костёр ставятся особо).
-Blocks.placeable = {
-    Blocks.PLANK, Blocks.SAND, Blocks.DIRT, Blocks.STONE, Blocks.LOG, Blocks.CAMPFIRE, Blocks.SAIL,
+-- Что кладут в хотбар по умолчанию — в порядке слотов.
+Blocks.hotbar = {
+    Blocks.PLANK, Blocks.RAIL, Blocks.WALL,
+    Blocks.LANTERN, Blocks.NET, Blocks.PURIFIER,
 }
 
 return Blocks

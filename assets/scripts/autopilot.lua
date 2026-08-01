@@ -1,266 +1,345 @@
 -- ---------------------------------------------------------------------------
--- autopilot.lua — игрок-автомат: проходит игру от высадки до отплытия сам.
+-- autopilot.lua — игрок-автомат: живёт на лодке сам.
 --
--- Запускается флагом --autopilot=1 (см. LaunchArg движка) и нужен ровно для
--- одного: проверять игру НА САМОЙ ИГРЕ, без человека за мышью. В CI нет ни
--- мыши, ни клавиатуры, поэтому единственный способ узнать, что мир строится,
--- кирка ломает, крафт считает, а лодка достраивается — прожить всё это.
+-- В игре про уют нет победы, поэтому автопилоту нечего «пройти». Его задача
+-- другая: за один прогон ТРОНУТЬ каждую систему — подобрать мусор багром,
+-- скрафтить из него доску, достроить палубу, разобрать блок обратно, поесть,
+-- поставить фонарь, — и оставить в логе следы, по которым CI поймёт, что всё
+-- это действительно случилось, а не просто не упало.
 --
--- Ключевое: автопилот НЕ трогает мир напрямую и не телепортируется. Он
--- заполняет ту же таблицу намерений, что человек заполняет мышью и WASD, и
--- отдаёт её player.lua. Всё, что он проходит, пройдёт и человек — иначе
--- проверялся бы двойник игры, а не игра.
---
--- Каждый шаг под сторожевым таймером: зависший автопилот должен ронять прогон
--- с внятной строкой в логе, а не молча крутиться до таймаута CI.
+-- Как и раньше, автопилот не трогает мир напрямую: он заполняет ту же таблицу
+-- намерений, что человек заполняет мышью и клавишами. Что проходит он, пройдёт
+-- и человек.
 -- ---------------------------------------------------------------------------
 local Blocks = require "blocks"
+local Ocean = require "ocean"
 
 local A = {}
 
-local V, P, Inv, Boat, log
+local Ship, P, Inv, Debris, S, log
 
-local state = "wood"
+local state = "gather"
 local stateTime = 0.0
-local target = nil          -- {x,y,z} блок, который сейчас добываем
-local blacklist = {}        -- "x,y,z" -> сколько ещё игнорировать
-local stuckTimer = 0.0
-local lastPos = {x = 0, z = 0}
-local buildQueue = nil
-local aimYaw, aimPitch = 0.0, 0.0
+local totalTime = 0.0
 local done = false
+local target = nil
+local built, dismantled = 0, 0
+local checklist = {gather = false, craft = false, build = false,
+                   dismantle = false, eat = false, lantern = false}
 
-A.NEED_LOGS = 2      -- 2 бревна -> 8 досок: ровно корпус лодки
-A.NEED_LEAVES = 8    -- 8 листьев -> 2 паруса
+A.NEED_SCRAP = 8
+A.NEED_BUILD = 4
+A.NEED_PLASTIC = 2
 
 local STATE_LIMIT = {
-    wood = 90.0, leaves = 90.0, craft = 5.0, build = 120.0, sail = 20.0,
+    gather = 180.0, craft = 8.0, build = 90.0, dismantle = 45.0,
+    lantern = 60.0, idle = 1e9,
 }
-
-local function keyOf(b) return b.x .. "," .. b.y .. "," .. b.z end
 
 local function setState(next)
     log(string.format("THEBOAT: autopilot -> %s (после %.1f c)", next, stateTime))
     state = next
     stateTime = 0.0
     target = nil
-    buildQueue = nil
 end
 
 function A.Init(deps)
-    V, P, Inv, Boat = deps.voxel, deps.player, deps.inventory, deps.boat
+    Ship, P, Inv, Debris, S = deps.ship, deps.player, deps.inventory, deps.debris, deps.survival
     log = deps.log
-    lastPos.x, lastPos.z = P.pos.x, P.pos.z
     log("THEBOAT: autopilot enabled")
 end
 
--- Пустая таблица намерений: дальше шаги её заполняют.
 local function blankInput()
     return {
         moveF = 0.0, moveR = 0.0, jump = false, sprint = false, crouch = false,
         lookX = 0.0, lookY = 0.0,
-        breakHeld = false, placePressed = false, usePressed = false, hotbar = nil,
+        breakHeld = false, placePressed = false, usePressed = false,
+        eatPressed = false, drinkPressed = false, fishPressed = false,
+        craft = nil, cycleSlot = false,
     }
 end
 
--- Идти к точке в плоскости XZ. Возвращает оставшееся расстояние.
-local function walkTo(input, tx, tz, dt)
+-- Идти к точке в КОРАБЕЛЬНЫХ координатах (палуба — единственное, где автопилот
+-- ходит; за борт он не лезет специально).
+--
+-- Палуба — не пустая площадка: посреди неё стоит мачта, по бортам леера, на
+-- корме каюта. Прямая линия к цели регулярно упирается в одно из этого, поэтому
+-- у ходьбы есть простейший объезд: не сдвинулись за треть секунды — шагаем
+-- боком, чередуя сторону. Полноценный поиск пути на площадке в тридцать клеток
+-- был бы из пушки по воробьям.
+local lastPos = {x = 0.0, z = 0.0}
+local stuckTimer = 0.0
+local stuckSide = 1.0
+
+local frameDt = 1.0 / 60.0
+
+local function walkTo(input, tx, tz)
     local dx, dz = tx - P.pos.x, tz - P.pos.z
     local dist = math.sqrt(dx * dx + dz * dz)
-    if dist < 0.05 then return dist end
-    local yaw = math.deg(math.atan(-dx, -dz))
-    P.SetLook(yaw, 0.0)
+    if dist < 0.25 then
+        stuckTimer = 0.0
+        return dist
+    end
+
+    -- Идём ПО ОДНОЙ ОСИ ЗА РАЗ: сначала выравниваемся по X, потом по Z. По
+    -- прямой к цели путь регулярно проходит впритирку к мачте, и игрок шириной
+    -- в 0.6 блока задевает её углом; по осям же он встаёт ровно в середину
+    -- своего ряда клеток и проходит мимо. Настоящий поиск пути на площадке в
+    -- три десятка клеток был бы из пушки по воробьям.
+    local gx, gz
+    if math.abs(dx) > 0.3 then gx, gz = dx, 0.0 else gx, gz = 0.0, dz end
+    P.SetLook(math.deg(math.atan(-gx, -gz)), 0.0)
     input.moveF = 1.0
 
-    -- Застряли (упёрлись в дерево/обрыв) — подпрыгнуть и качнуться в сторону.
-    -- Автопрыжок в player.lua берёт ступеньку в блок, всё остальное — сюда.
+    -- Всё-таки упёрлись (ящик, бочка, надстройка) — шагаем боком, меняя сторону
+    -- не чаще раза в пару секунд: частая смена оставляет бота топтаться на месте.
     local moved = math.abs(P.pos.x - lastPos.x) + math.abs(P.pos.z - lastPos.z)
-    if moved < 0.02 then
-        stuckTimer = stuckTimer + dt
-        if stuckTimer > 0.35 then
+    lastPos.x, lastPos.z = P.pos.x, P.pos.z
+    if moved < 0.004 then
+        stuckTimer = stuckTimer + frameDt
+        if stuckTimer > 0.4 then
+            input.moveR = stuckSide
             input.jump = true
-            input.moveR = (math.floor(stateTime * 2.0) % 2 == 0) and 1.0 or -1.0
+            if stuckTimer > 2.4 then
+                stuckSide = -stuckSide
+                stuckTimer = 0.4
+            end
         end
     else
         stuckTimer = 0.0
     end
-    lastPos.x, lastPos.z = P.pos.x, P.pos.z
     return dist
 end
 
--- На какое расстояние подходить, чтобы блок оказался в досягаемости кирки.
-local function approachDistance(b)
-    local ey = P.pos.y + P.EYE_HEIGHT
-    local dy = (b.y + 0.5) - ey
-    local room = (P.REACH - 0.7) ^ 2 - dy * dy
-    if room <= 1.0 then return 1.1 end
-    return math.max(1.1, math.min(2.4, math.sqrt(room)))
-end
-
--- Навестись на блок и проверить лучом, что под прицелом НУЖНАЯ ПОРОДА.
+-- --- Сбор мусора багром -----------------------------------------------------
 --
--- Именно порода, а не конкретная ячейка. Крона дерева — два десятка одинаковых
--- листьев вплотную: луч, пущенный в выбранный лист, регулярно упирается в
--- соседний, и требование «попасть ровно в этот блок» превращало добычу в
--- бесконечное «отойти-подойти-промахнуться». Нам нужен лист, а не конкретный
--- лист — что попалось под прицел, то и рубим.
-local function aimAt(b, blockId)
-    aimYaw, aimPitch = P.LookAnglesTo(b.x + 0.5, b.y + 0.5, b.z + 0.5)
-    P.SetLook(aimYaw, aimPitch)
-    local t = P.target
-    if t == nil then return false end
-    return V.Get(t.x, t.y, t.z) == blockId
-end
+-- Целиться нужно в МИРОВЫХ координатах: мусор плавает в океане, а игрок стоит
+-- на качающейся палубе, и общая у них только мировая система.
+--
+-- ВАЖНО про порядок: направление взгляда — оно же направление ходьбы. Если
+-- сперва позвать walkTo (он ставит moveF = 1 и смотрит на точку палубы), а
+-- потом навести взгляд на мусор, игрок пойдёт НА МУСОР — то есть за борт. Так
+-- что сначала доходим, и только на месте поднимаем багор.
+local function gather(input, dt)
+    -- Ловим не «сколько-нибудь», а ровно то, что нужно дальше по плану: доски
+    -- на пристройку и пластик на фонарь. Иначе прогон доходил бы до фонаря с
+    -- пустыми руками и молча его пропускал — то есть не проверял бы свет.
+    if Inv.Count(Blocks.SCRAP) >= A.NEED_SCRAP
+       and Inv.Count(Blocks.PLASTIC) >= A.NEED_PLASTIC then return true end
 
--- --- Добыча -----------------------------------------------------------------
-local function gather(input, dt, blockId, needCount)
-    if Inv.Count(blockId) >= needCount then return true end
-
-    if target and V.Get(target.x, target.y, target.z) ~= blockId then target = nil end
-    if not target then
-        -- Блоки, до которых уже не дотянулись, отсеиваем прямо в поиске —
-        -- иначе автопилот вечно выбирал бы один и тот же недостижимый лист.
-        local found = V.FindNearest(blockId, math.floor(P.pos.x), math.floor(P.pos.y + 1),
-                                    math.floor(P.pos.z), 14, 8,
-                                    function(x, y, z)
-                                        return blacklist[x .. "," .. y .. "," .. z] ~= nil
-                                    end)
-        if not found then
-            log("THEBOAT: autopilot не нашёл " .. Blocks.Name(blockId) .. " поблизости")
-            return false
+    -- Ближайший к лодке обломок: ищем каждый кадр, он движется.
+    local ex, ey, ez = P.WorldEye()
+    local best, bestD = nil, 1e9
+    for _, it in ipairs(Debris.Items()) do
+        if it.obj:Valid() then
+            local p = it.obj.Transform.Position
+            local dx, dy, dz = p.x - ex, p.y - ey, p.z - ez
+            local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+            if d < bestD then best, bestD = it, d end
         end
-        target = found
-        target.tries = 0.0
     end
+    if best == nil then return false end
 
-    local dx, dz = (target.x + 0.5) - P.pos.x, (target.z + 0.5) - P.pos.z
-    local flat = math.sqrt(dx * dx + dz * dz)
-    if flat > approachDistance(target) then
-        walkTo(input, target.x + 0.5, target.z + 0.5, dt)
-        return false
-    end
+    -- Встать у того борта, к которому он ближе, и смотреть на него.
+    local p = best.obj.Transform.Position
+    local lx = p.x - Ship.pos.x
+    local lz = p.z - Ship.pos.z
+    -- Держимся в границах палубы: за борт автопилот не лезет специально.
+    local standX = math.max(-1.5, math.min(1.5, lx))
+    local standZ = math.max(-2.0, math.min(5.2, lz))
+    if walkTo(input, standX, standZ) >= 0.45 then return false end
 
-    if aimAt(target, blockId) then
-        input.breakHeld = true
-        target.tries = 0.0
-    else
-        -- Не видим цель (закрыта соседним блоком) — чуть отойти и попробовать
-        -- снова; после секунды безуспешных попыток забыть про этот блок.
-        target.tries = (target.tries or 0.0) + dt
-        input.moveF = -0.6
-        if target.tries > 1.0 then
-            blacklist[keyOf(target)] = 8.0
-            target = nil
-        end
+    -- Дошли: останавливаемся, наводимся, багрим.
+    input.moveF, input.moveR = 0.0, 0.0
+    P.SetLook(P.LookAnglesTo(p.x, p.y, p.z))
+    if bestD < Debris.REACH * 0.92 and P.aimDebris ~= nil then
+        input.usePressed = true
     end
     return false
 end
 
--- --- Постройка лодки --------------------------------------------------------
+-- --- Стройка ----------------------------------------------------------------
 --
--- Ставим от дальнего края к ближнему: луч к ближней клетке не должен проходить
--- сквозь уже поставленную доску.
-local function buildPlan()
-    local d = V.Dock()
-    local plan = {}
-    for z = d.z1, d.z0, -1 do
-        for x = d.x0, d.x1 do
-            plan[#plan + 1] = {x = x, y = d.y, z = z, id = Blocks.PLANK}
+-- Достраиваем палубу вперёд по носу: там свободно, и результат виден с любого
+-- места. Целимся в верхнюю грань соседней доски — блок встаёт в пустую ячейку
+-- перед той, в которую упёрся луч.
+local function nextBuildCell()
+    for z = 8, 11 do
+        for x = -1, 1 do
+            if Ship.Get(x, 0, z) == Blocks.AIR and Ship.Get(x, 0, z - 1) ~= Blocks.AIR then
+                return {x = x, y = 0, z = z}
+            end
         end
     end
-    -- Мачты — на ДАЛЬНЕМ ряду: поставленные на ближнем, они замуровали бы
-    -- вход на собственную лодку (парус — такой же твёрдый блок, как доска).
-    plan[#plan + 1] = {x = d.x0 + 1, y = d.y + 1, z = d.z1, id = Blocks.SAIL}
-    plan[#plan + 1] = {x = d.x0 + 2, y = d.y + 1, z = d.z1, id = Blocks.SAIL}
-    -- Место, с которого достаёт до всех клеток причала и откуда ничего не
-    -- загораживает обзор.
-    plan.stand = {x = (d.x0 + d.x1) * 0.5 + 0.5, z = d.z0 - 2.5}
-    return plan
+    return nil
 end
 
 local function build(input, dt)
-    if not buildQueue then buildQueue = buildPlan() end
+    if built >= A.NEED_BUILD then return true end
+    if Inv.Count(Blocks.PLANK) <= 0 then return true end -- доски кончились: не тупик
 
-    -- Дошли ли до места сборки.
-    local st = buildQueue.stand
-    local dx, dz = st.x - P.pos.x, st.z - P.pos.z
-    if math.sqrt(dx * dx + dz * dz) > 0.45 then
-        walkTo(input, st.x, st.z, dt)
-        return false
+    local cell = nextBuildCell()
+    if cell == nil then return true end
+
+    -- Слот с доской.
+    for i, id in ipairs(Inv.hotbar) do
+        if id == Blocks.PLANK then Inv.Select(i) end
     end
 
-    -- Первая клетка плана, которая ещё не заполнена.
+    -- Крадучись у самого борта: полным шагом бот проскакивает край носа по
+    -- инерции и оказывается в воде — вместо стройки начинается заплыв.
+    input.crouch = true
+
+    -- Встаём у самого края палубы и целимся В ВОДУ на месте будущей доски —
+    -- тем же жестом, каким её настилает человек (см. placementCell в player.lua).
+    -- Идём в ЦЕНТР клетки (cell.x + 0.5), а не в её индекс: игрок шириной в
+    -- 0.6 блока, поставленный на границу клеток, задевает соседнюю — и упирается
+    -- в леер вместо того, чтобы дойти до края.
+    if walkTo(input, cell.x + 0.5, cell.z - 1.1) > 0.4 then return false end
+
+    -- На месте — стоим и кладём доску. Шаг вперёд одновременно со взглядом в
+    -- воду означал бы шаг в воду.
+    input.moveF, input.moveR = 0.0, 0.0
+    local tx, ty, tz = Ship.LocalToWorld(cell.x + 0.5, 1.0, cell.z + 0.5)
+    P.SetLook(P.LookAnglesTo(tx, ty, tz))
+    input.placePressed = true
+    return false
+end
+
+-- --- Разбор собственной палубы ---------------------------------------------
+--
+-- Ломать начинаем, как только нужный блок оказался ПОД ПРИЦЕЛОМ, а не когда
+-- дошли до заданной точки. Расстояние и так ограничено длиной луча, а порог по
+-- дистанции давал ровно то, что и должен был: игрок топтался вокруг него, кирка
+-- то включалась, то выключалась, и прогресс разрушения обнулялся каждый кадр.
+local function dismantle(input, dt)
+    if dismantled >= 1 then return true end
+    -- Берём леер на борту: разбирать пол под собой — плохая идея и для
+    -- автопилота, и для человека.
     local cell = nil
-    for _, c in ipairs(buildQueue) do
-        if V.Get(c.x, c.y, c.z) ~= c.id then cell = c; break end
+    for z = 0, 4 do
+        if Ship.Get(3, 1, z) == Blocks.RAIL then cell = {x = 3, y = 1, z = z} break end
     end
     if cell == nil then return true end
 
-    if Inv.Count(cell.id) <= 0 then
-        log("THEBOAT: autopilot: кончился " .. Blocks.Name(cell.id))
+    local wx, wy, wz = Ship.LocalToWorld(cell.x + 0.5, cell.y + 0.5, cell.z + 0.5)
+    local t = P.target
+    if t and t.x == cell.x and t.y == cell.y and t.z == cell.z then
+        input.moveF, input.moveR = 0.0, 0.0
+        P.SetLook(P.LookAnglesTo(wx, wy, wz))
+        input.breakHeld = true
         return false
     end
-    -- Выбрать нужный слот хотбара — как игрок клавишей.
+
+    -- Не видим цель — подходим и смотрим на неё (стоя, а не на ходу).
+    if walkTo(input, cell.x - 1.5, cell.z + 0.5) < 1.2 then
+        input.moveF, input.moveR = 0.0, 0.0
+        P.SetLook(P.LookAnglesTo(wx, wy, wz))
+    end
+    return false
+end
+
+-- --- Фонарь -----------------------------------------------------------------
+local function placeLantern(input, dt)
+    if Inv.Count(Blocks.LANTERN) <= 0 then
+        if Inv.CanCraft(Inv.FindRecipe("lantern")) then
+            input.craft = 4
+            return false
+        end
+        return true -- нет материалов: не повод считать прогон сломанным
+    end
     for i, id in ipairs(Inv.hotbar) do
-        if id == cell.id then input.hotbar = i end
+        if id == Blocks.LANTERN then Inv.Select(i) end
     end
 
-    -- Целимся в ОПОРУ под клеткой: блок ставится в пустую ячейку перед той,
-    -- в которую упёрся луч.
-    local support = {x = cell.x, y = cell.y - 1, z = cell.z}
-    aimYaw, aimPitch = P.LookAnglesTo(cell.x + 0.5, cell.y + 0.0, cell.z + 0.5)
-    P.SetLook(aimYaw, aimPitch)
+    local cell = nil
+    for z = -1, 3 do
+        if Ship.Get(-2, 1, z) == Blocks.AIR and Ship.Get(-2, 0, z) ~= Blocks.AIR then
+            cell = {x = -2, y = 1, z = z}
+            break
+        end
+    end
+    if cell == nil then return true end
+
+    if walkTo(input, cell.x + 1.6, cell.z + 0.5) > 0.7 then return false end
+    input.moveF, input.moveR = 0.0, 0.0
+    local sx, sy, sz = Ship.LocalToWorld(cell.x + 0.5, cell.y, cell.z + 0.5)
+    P.SetLook(P.LookAnglesTo(sx, sy, sz))
     local t = P.target
-    if t and t.x == support.x and t.y == support.y and t.z == support.z
-       and t.px == cell.x and t.py == cell.y and t.pz == cell.z then
+    if t and t.px == cell.x and t.py == cell.y and t.pz == cell.z then
         input.placePressed = true
     end
     return false
 end
 
--- --- Кадр автопилота --------------------------------------------------------
+-- --- Кадр -------------------------------------------------------------------
 function A.Update(dt)
     local input = blankInput()
-    if done then return input end
+    if done then
+        -- Прогон закончен: автопилот просто стоит на палубе и смотрит на воду.
+        -- Это буквально то, ради чего игра сделана, и заодно даёт CI кадры,
+        -- на которых видно живой мир, а не суетящегося бота.
+        P.SetLook(200.0, -4.0)
+        return input
+    end
 
+    frameDt = dt
     stateTime = stateTime + dt
-    for k, v in pairs(blacklist) do
-        local left = v - dt
-        if left <= 0.0 then blacklist[k] = nil else blacklist[k] = left end
+    totalTime = totalTime + dt
+
+    -- Оказались за бортом — плывём к лодке и лезем обратно. Отдельным
+    -- состоянием это не делаем: упасть в воду можно из любого занятия, и
+    -- возвращение на палубу — не этап плана, а то, что прерывает любой этап.
+    if P.overboard then
+        -- Плывём не к середине лодки, а к НОСУ: над серединой стоят каюта и
+        -- мачта, и подтянувшись там, вылезешь на крышу вместо палубы.
+        local bx, by, bz = Ship.LocalToWorld(0.0, 1.0, 5.0)
+        local dx, dz = bx - P.pos.x, bz - P.pos.z
+        P.SetLook(math.deg(math.atan(-dx, -dz)), 0.0)
+        input.moveF = 1.0
+        input.jump = true
+        stateTime = stateTime - dt -- время в воде состоянию не засчитываем
+        return input
     end
 
     local limit = STATE_LIMIT[state]
     if limit and stateTime > limit then
-        log(string.format("THEBOAT: FAIL autopilot застрял в состоянии '%s' (%.0f c)", state, stateTime))
+        -- Печатаем не только «застрял», но и ЧЕМ он был занят: без позиции,
+        -- прицела и содержимого рук строка в логе CI не отличает «не дошёл» от
+        -- «дошёл, но не за что зацепиться».
+        local t = P.target
+        log(string.format("THEBOAT: FAIL autopilot застрял в '%s' (%.0f c) pos=(%.2f,%.2f,%.2f) " ..
+                          "заборт=%s прицел=%s доска=%d фонарь=%d",
+            state, stateTime, P.pos.x, P.pos.y, P.pos.z, tostring(P.overboard),
+            t and (t.x .. "," .. t.y .. "," .. t.z) or "нет",
+            Inv.Count(Blocks.PLANK), Inv.Count(Blocks.LANTERN)))
         done = true
         return input
     end
 
-    if state == "wood" then
-        if gather(input, dt, Blocks.LOG, A.NEED_LOGS) then
-            log("THEBOAT: собрано брёвен: " .. Inv.Count(Blocks.LOG))
-            setState("leaves")
-        end
+    -- Есть и пить автопилот успевает между делом, как и человек.
+    if S.food < 55.0 and (Inv.Count(Blocks.FISH) > 0 or Inv.Count(Blocks.SEAWEED) > 0) then
+        input.eatPressed = true
+        checklist.eat = true
+    end
 
-    elseif state == "leaves" then
-        if gather(input, dt, Blocks.LEAVES, A.NEED_LEAVES) then
-            log("THEBOAT: собрано листьев: " .. Inv.Count(Blocks.LEAVES))
+    if state == "gather" then
+        if gather(input, dt) then
+            checklist.gather = true
+            log("THEBOAT: собрано обломков: " .. Inv.Count(Blocks.SCRAP) ..
+                ", всего выловлено предметов: " .. Debris.Collected())
             setState("craft")
         end
 
     elseif state == "craft" then
-        local planks = Inv.FindRecipe("planks")
-        while Inv.Count(Blocks.PLANK) < Boat.needPlanks and Inv.CanCraft(planks) do
-            Inv.Craft(planks)
+        local plank = Inv.FindRecipe("plank")
+        while Inv.Count(Blocks.PLANK) < A.NEED_BUILD and Inv.CanCraft(plank) do
+            Inv.Craft(plank)
         end
-        local sail = Inv.FindRecipe("sail")
-        while Inv.Count(Blocks.SAIL) < Boat.needSails and Inv.CanCraft(sail) do
-            Inv.Craft(sail)
-        end
-        log(string.format("THEBOAT: скрафчено досок %d, парусов %d",
-                          Inv.Count(Blocks.PLANK), Inv.Count(Blocks.SAIL)))
-        if Inv.Count(Blocks.PLANK) < Boat.needPlanks or Inv.Count(Blocks.SAIL) < Boat.needSails then
-            log("THEBOAT: FAIL не хватило материалов на лодку")
+        checklist.craft = Inv.Count(Blocks.PLANK) > 0
+        log("THEBOAT: скрафчено досок: " .. Inv.Count(Blocks.PLANK))
+        if not checklist.craft then
+            log("THEBOAT: FAIL из обломков не вышло ни одной доски")
             done = true
         else
             setState("build")
@@ -268,36 +347,40 @@ function A.Update(dt)
 
     elseif state == "build" then
         if build(input, dt) then
-            log(string.format("THEBOAT: лодка собрана: %d досок, %d парусов", Boat.planks, Boat.sails))
-            setState("sail")
+            checklist.build = built > 0
+            log("THEBOAT: достроено блоков палубы: " .. built ..
+                ", палуба теперь " .. Ship.BlockCount() .. " блоков")
+            setState("dismantle")
         end
 
-    elseif state == "sail" then
-        -- Готовность лодки пересчитывается раз в четверть секунды — сразу после
-        -- последней доски она ещё «не готова». Просим пересчёт явно, а сдаёмся
-        -- только по сторожевому таймеру, а не по первому же кадру.
-        if not Boat.ready then Boat.Recount() end
-        if not Boat.ready then
-            if stateTime > 2.0 then
-                log("THEBOAT: FAIL лодка не считается готовой: " ..
-                    Boat.planks .. "/" .. Boat.needPlanks .. " досок, " ..
-                    Boat.sails .. "/" .. Boat.needSails .. " парусов")
-                done = true
-            end
-        elseif Boat.escaped then
+    elseif state == "dismantle" then
+        if dismantle(input, dt) then
+            checklist.dismantle = dismantled > 0
+            log("THEBOAT: разобрано блоков корабля: " .. dismantled)
+            setState("lantern")
+        end
+
+    elseif state == "lantern" then
+        if placeLantern(input, dt) then
+            checklist.lantern = Ship.CountBlocks(Blocks.LANTERN) >= 2
+            log("THEBOAT: фонарей на палубе: " .. Ship.CountBlocks(Blocks.LANTERN))
+            -- Итог прогона: что из систем реально сработало.
+            local ok = checklist.gather and checklist.craft and checklist.build
+                       and checklist.dismantle and checklist.lantern
+            log(string.format("THEBOAT: LIVING ABOARD — выловлено %d, палуба %d блоков, путь %.0f м",
+                Debris.Collected(), Ship.BlockCount(), Ship.drift))
+            if ok then log("THEBOAT: ROUTINE OK") else log("THEBOAT: FAIL не все действия удались") end
+            setState("idle")
             done = true
-        elseif Boat.InDock(P.pos.x, P.pos.y, P.pos.z) then
-            -- Условие отплытия — то же, что для человека: стоять на причале и
-            -- нажать «использовать». Никаких поблажек автопилоту.
-            input.usePressed = true
-        else
-            local c = Boat.center
-            walkTo(input, c.x, c.z, dt)
         end
     end
 
     return input
 end
+
+-- Счётчики ведёт игра через эти хуки — автопилот не подглядывает в мир напрямую.
+function A.NotePlaced() built = built + 1 end
+function A.NoteBroken() dismantled = dismantled + 1 end
 
 function A.Done() return done end
 function A.State() return state end

@@ -81,14 +81,14 @@ case "${MODE}" in
         (cd "$(dirname "${EDITOR}")" && \
          ${RUNNER} env \
             SAGE_EDITOR_OPEN_PROJECT="${PROJECT_DIR}" \
-            SAGE_EDITOR_PLAY_SECONDS=60 \
+            SAGE_EDITOR_PLAY_SECONDS=240 \
             SAGE_EDITOR_BUILD_TO=theboat_dist \
             SAGE_GAME_ARGS="autopilot=1 ${GAME_ARGS[*]:-}" \
             SAGE_SCREENSHOT_AT_FRAME=5 SAGE_SCREENSHOT_PATH=/dev/null \
             ./SageEditor) > "${log}" 2>&1 || true
         grep -E "THEBOAT|SESSION" "${log}" || true
-        if grep -q "THEBOAT: ESCAPED" "${log}" && grep -q "SESSION: PASS" "${log}"; then
-            echo "OK: игра пройдена автопилотом и собрана в exe"
+        if grep -q "THEBOAT: ROUTINE OK" "${log}" && grep -q "SESSION: PASS" "${log}"; then
+            echo "OK: автопилот прожил день на лодке, игра собрана в exe"
         else
             echo "ОШИБКА: автопрогон не дошёл до конца — полный лог в ${log}"
             exit 1

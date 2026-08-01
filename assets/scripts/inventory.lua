@@ -1,12 +1,10 @@
 -- ---------------------------------------------------------------------------
--- inventory.lua — что игрок несёт в руках и во что это можно переделать.
+-- inventory.lua — что лежит в трюме и во что это превращается.
 --
--- Инвентарь намеренно плоский: «id блока -> сколько штук». Отдельных предметов
--- (не-блоков) в игре нет — ягоды это куст, парус это блок паруса, — и пока это
--- так, любая более богатая модель была бы обобщением ради обобщения.
---
--- Крафт описан данными, а не кодом: рецепт — это «что тратим» и «что даём».
--- Добавить рецепт значит дописать строку в таблицу, а не ветку в функцию.
+-- Рецепты — данные, а не код: «что тратим» и «что даём». Добавить крафт значит
+-- дописать строку, а не ветку в функцию. Хотбар держит только СТАВИМЫЕ блоки,
+-- припасы и еда живут в общем списке — раскладывать сыр и доски по разным
+-- ящикам в игре про уют незачем.
 -- ---------------------------------------------------------------------------
 local Blocks = require "blocks"
 
@@ -14,26 +12,26 @@ local Inv = {}
 
 local counts = {}
 
--- Хотбар: что можно поставить/съесть, в порядке слотов.
-Inv.hotbar = {
-    Blocks.PLANK, Blocks.LOG, Blocks.SAIL,
-    Blocks.SAND, Blocks.STONE, Blocks.CAMPFIRE,
-}
+Inv.hotbar = Blocks.hotbar
 Inv.selected = 1
 
 Inv.recipes = {
-    {
-        id = "planks", name = "Доски", key = "Craft Planks",
-        cost = {{Blocks.LOG, 1}}, give = {Blocks.PLANK, 4},
-    },
-    {
-        id = "sail", name = "Парус", key = "Craft Sail",
-        cost = {{Blocks.LEAVES, 4}}, give = {Blocks.SAIL, 1},
-    },
-    {
-        id = "campfire", name = "Костёр", key = "Craft Campfire",
-        cost = {{Blocks.PLANK, 2}, {Blocks.STONE, 1}}, give = {Blocks.CAMPFIRE, 1},
-    },
+    {id = "plank",    name = "Доска",       key = "Craft 1",
+     cost = {{Blocks.SCRAP, 2}},                       give = {Blocks.PLANK, 1}},
+    {id = "rail",     name = "Леер",        key = "Craft 2",
+     cost = {{Blocks.SCRAP, 1}, {Blocks.ROPE, 1}},     give = {Blocks.RAIL, 2}},
+    {id = "wall",     name = "Стена",       key = "Craft 3",
+     cost = {{Blocks.SCRAP, 3}},                       give = {Blocks.WALL, 2}},
+    {id = "lantern",  name = "Фонарь",      key = "Craft 4",
+     cost = {{Blocks.SCRAP, 2}, {Blocks.PLASTIC, 2}},  give = {Blocks.LANTERN, 1}},
+    {id = "net",      name = "Сеть",        key = "Craft 5",
+     cost = {{Blocks.ROPE, 3}, {Blocks.PLASTIC, 1}},   give = {Blocks.NET, 1}},
+    {id = "purifier", name = "Опреснитель", key = "Craft 6",
+     cost = {{Blocks.PLASTIC, 3}, {Blocks.SCRAP, 2}},  give = {Blocks.PURIFIER, 1}},
+    {id = "rod",      name = "Удочка",      key = "Craft 7",
+     cost = {{Blocks.SCRAP, 1}, {Blocks.ROPE, 2}},     give = {Blocks.ROD, 1}},
+    {id = "sail",     name = "Парус",       key = "Craft 8",
+     cost = {{Blocks.CLOTH, 3}, {Blocks.ROPE, 1}},     give = {Blocks.SAIL, 1}},
 }
 
 function Inv.Count(id) return counts[id] or 0 end
@@ -51,11 +49,11 @@ function Inv.Remove(id, n)
     return true
 end
 
-function Inv.Total()
-    local sum = 0
-    for _, n in pairs(counts) do sum = sum + n end
-    return sum
+function Inv.AddLoot(loot)
+    for _, entry in ipairs(loot) do Inv.Add(entry[1], entry[2]) end
 end
+
+function Inv.Has(id, n) return (counts[id] or 0) >= (n or 1) end
 
 function Inv.SelectedBlock() return Inv.hotbar[Inv.selected] end
 
@@ -82,8 +80,6 @@ function Inv.CanCraft(recipe)
     return true
 end
 
--- Возвращает true и рецепт при успехе, иначе false и причину — вызывающий сам
--- решает, показать это сообщением на HUD или промолчать.
 function Inv.Craft(recipe)
     if not Inv.CanCraft(recipe) then
         local missing = {}
@@ -98,14 +94,33 @@ function Inv.Craft(recipe)
     return true, recipe.name .. " x" .. recipe.give[2]
 end
 
--- Еда: ягоды с кустов. Возвращает true, если было что съесть.
-function Inv.EatBerries()
-    return Inv.Remove(Blocks.BUSH, 1)
+-- Съесть что-нибудь: перебор идёт от самого сытного, чтобы «поесть» не
+-- превращалось в выбор блюда из меню.
+function Inv.EatBest()
+    local best, bestVal = nil, 0
+    for _, id in ipairs({Blocks.FISH, Blocks.SEAWEED}) do
+        local food = Blocks.Food(id)
+        if food and Inv.Count(id) > 0 and food > bestVal then best, bestVal = id, food end
+    end
+    if not best then return nil end
+    Inv.Remove(best, 1)
+    return best, bestVal
 end
 
-function Inv.Reset()
-    counts = {}
-    Inv.selected = 1
+function Inv.DrinkBest()
+    if Inv.Count(Blocks.WATER) > 0 then
+        Inv.Remove(Blocks.WATER, 1)
+        return Blocks.WATER, Blocks.Drink(Blocks.WATER)
+    end
+    return nil
+end
+
+-- Что игрок несёт — для строки состояния и автопрогона.
+function Inv.Summary()
+    return string.format("обломки=%d верёвка=%d пластик=%d ткань=%d доска=%d еда=%d вода=%d",
+        Inv.Count(Blocks.SCRAP), Inv.Count(Blocks.ROPE), Inv.Count(Blocks.PLASTIC),
+        Inv.Count(Blocks.CLOTH), Inv.Count(Blocks.PLANK),
+        Inv.Count(Blocks.FISH) + Inv.Count(Blocks.SEAWEED), Inv.Count(Blocks.WATER))
 end
 
 return Inv

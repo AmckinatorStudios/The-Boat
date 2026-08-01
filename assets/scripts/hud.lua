@@ -1,20 +1,16 @@
 -- ---------------------------------------------------------------------------
--- hud.lua — интерфейс игры, собранный СКРИПТОМ из UI-компонентов движка.
+-- hud.lua — интерфейс, собранный скриптом из UI-компонентов движка.
 --
--- Ни один элемент не расставлен в редакторе руками: панели, полосы и подписи
--- создаются здесь как обычные сущности сцены с UIElementComponent. Это не поза
--- ради чистоты — хотбар зависит от содержимого инвентаря, а он у игры свой,
--- так что «нарисовать заранее» всё равно не вышло бы.
---
--- Якоря и размеры — в пикселях от края экрана (см. UIAnchor движка): интерфейс
--- сам держится за свои углы при любом размере окна и одинаково выглядит в
--- панели Game редактора и в собранной игре.
+-- Правило этого интерфейса: НЕ мешать смотреть на воду. Поэтому шкал три, а не
+-- шесть; они прижаты в угол и подсвечиваются только когда есть о чём сказать;
+-- прицел — четыре чёрточки вокруг пустого центра; подсказки появляются по делу
+-- и уходят сами. Всё, что можно не показывать постоянно, не показывается.
 -- ---------------------------------------------------------------------------
 local Blocks = require "blocks"
 
 local H = {}
 
-local els = {}          -- имя -> GameObject
+local els = {}
 local messageTimer = 0.0
 local root
 
@@ -26,10 +22,10 @@ local function newElement(name, kind, anchor, offx, offy, w, h)
     ui.Anchor = anchor
     ui.Offset = Vec2(offx, offy)
     ui.Size = Vec2(w, h)
-    ui.Rounding = 4.0
-    ui.Color = Vec4(0.05, 0.06, 0.09, 0.55)
-    ui.TextScale = 1.6
-    ui.TextColor = Vec4(0.95, 0.95, 0.92, 1.0)
+    ui.Rounding = 5.0
+    ui.Color = Vec4(0.04, 0.06, 0.10, 0.42)
+    ui.TextScale = 1.5
+    ui.TextColor = Vec4(0.96, 0.95, 0.92, 1.0)
     els[name] = obj
     return obj, ui
 end
@@ -44,78 +40,67 @@ function H.Build()
     root = SpawnObject("HUD")
     SetMeshNone(root)
 
-    -- Прицел: две перекладины вместо квадрата — точка в центре экрана должна
-    -- оставаться видимой, а не закрашиваться.
-    local _, cx = newElement("Crosshair H", UIKind.Panel, UIAnchor.Center, 0, 0, 14, 2)
-    cx.Color = Vec4(1.0, 1.0, 1.0, 0.75)
-    cx.Rounding = 0.0
-    local _, cy = newElement("Crosshair V", UIKind.Panel, UIAnchor.Center, 0, 0, 2, 14)
-    cy.Color = Vec4(1.0, 1.0, 1.0, 0.75)
-    cy.Rounding = 0.0
+    -- Прицел: четыре штриха вокруг пустого центра. Точка в середине экрана
+    -- закрывала бы ровно то, во что целишься.
+    local marks = {{0, -9, 2, 7}, {0, 9, 2, 7}, {-9, 0, 7, 2}, {9, 0, 7, 2}}
+    for i, m in ipairs(marks) do
+        local _, e = newElement("Aim " .. i, UIKind.Panel, UIAnchor.Center, m[1], m[2], m[3], m[4])
+        e.Color = Vec4(1.0, 1.0, 1.0, 0.55)
+        e.Rounding = 1.0
+    end
 
-    -- Шкалы состояния — левый нижний угол.
+    -- Три шкалы: сыт, напоён, согрет. Больше в игре про уют не нужно.
     local bars = {
-        {"Health",  0.86, 0.26, 0.24, 0},
-        {"Hunger",  0.85, 0.62, 0.24, 22},
-        {"Stamina", 0.45, 0.72, 0.90, 44},
-        {"Oxygen",  0.35, 0.78, 0.95, 66},
+        {"Food",  "Сытость", 0.86, 0.66, 0.32, 0},
+        {"Water", "Жажда",   0.38, 0.70, 0.92, 22},
+        {"Warm",  "Тепло",   0.94, 0.52, 0.34, 44},
     }
     for _, b in ipairs(bars) do
         local _, e = newElement(b[1] .. " Bar", UIKind.Bar, UIAnchor.BottomLeft,
-                                18, 96 - b[5], 190, 16)
-        e.BarFillColor = Vec4(b[2], b[3], b[4], 1.0)
-        e.Color = Vec4(0.0, 0.0, 0.0, 0.5)
+                                18, 74 - b[6], 176, 16)
+        e.BarFillColor = Vec4(b[3], b[4], b[5], 0.95)
+        e.Color = Vec4(0.0, 0.0, 0.0, 0.38)
         e.Rounding = 7.0
         e.Value = 1.0
-        e.Text = b[1]
-        e.TextScale = 1.2
+        e.Text = b[2]
+        e.TextScale = 1.15
         e.TextCentered = true
     end
-    -- Кислород показываем только под водой: постоянная полная полоса
-    -- «сколько я не тону» — шум, а не информация.
-    ui("Oxygen Bar").Visible = false
 
-    -- Хотбар — снизу по центру, слот на каждый ставимый блок.
-    local Inv = H.inventory
-    local slotW, gap = 74, 6
-    local total = #Inv.hotbar * slotW + (#Inv.hotbar - 1) * gap
-    for i = 1, #Inv.hotbar do
+    local slotW, gap = 78, 6
+    local total = #Blocks.hotbar * slotW + (#Blocks.hotbar - 1) * gap
+    for i = 1, #Blocks.hotbar do
         local x = -total * 0.5 + (i - 1) * (slotW + gap) + slotW * 0.5
         local _, e = newElement("Slot " .. i, UIKind.Panel, UIAnchor.BottomCenter,
-                                x, 18, slotW, 46)
+                                x, 16, slotW, 44)
         e.Rounding = 6.0
         e.BorderThickness = 2.0
-        e.BorderColor = Vec4(0.25, 0.25, 0.28, 0.8)
-        e.TextScale = 1.2
+        e.BorderColor = Vec4(0.28, 0.28, 0.30, 0.7)
+        e.TextScale = 1.15
         e.TextCentered = true
     end
 
-    -- Задача, часы и сообщения.
-    local _, obj = newElement("Objective", UIKind.Panel, UIAnchor.TopRight, 16, 16, 310, 78)
-    obj.TextCentered = false
-    obj.TextScale = 1.3
-    obj.Text = ""
+    local _, journal = newElement("Journal", UIKind.Panel, UIAnchor.TopRight, 16, 16, 292, 92)
+    journal.TextCentered = false
+    journal.TextScale = 1.25
+    journal.Text = ""
 
-    local _, msg = newElement("Message", UIKind.Label, UIAnchor.TopCenter, 0, 78, 560, 30)
+    local _, msg = newElement("Message", UIKind.Label, UIAnchor.TopCenter, 0, 74, 620, 28)
     msg.Color = Vec4(0.0, 0.0, 0.0, 0.0)
-    msg.TextScale = 1.7
-    msg.Text = ""
+    msg.TextScale = 1.6
 
-    local _, hit = newElement("Break Bar", UIKind.Bar, UIAnchor.Center, 0, 48, 130, 10)
-    hit.BarFillColor = Vec4(0.92, 0.92, 0.88, 0.95)
-    hit.Color = Vec4(0.0, 0.0, 0.0, 0.45)
-    hit.Value = 0.0
-    hit.Visible = false
+    local _, prompt = newElement("Prompt", UIKind.Label, UIAnchor.Center, 0, 62, 400, 24)
+    prompt.Color = Vec4(0.0, 0.0, 0.0, 0.0)
+    prompt.TextScale = 1.25
 
-    local _, look = newElement("Looking At", UIKind.Label, UIAnchor.Center, 0, 68, 320, 24)
-    look.Color = Vec4(0.0, 0.0, 0.0, 0.0)
-    look.TextScale = 1.2
-    look.Text = ""
+    local _, bar = newElement("Break Bar", UIKind.Bar, UIAnchor.Center, 0, 40, 120, 8)
+    bar.BarFillColor = Vec4(0.95, 0.93, 0.88, 0.95)
+    bar.Color = Vec4(0.0, 0.0, 0.0, 0.35)
+    bar.Value = 0.0
+    bar.Visible = false
 
-    -- Все элементы — дети HUD: удалить интерфейс можно одной сущностью, и в
-    -- иерархии редактора он не размазан по корню сцены.
-    for name, obj2 in pairs(els) do
-        if name ~= "HUD" then obj2:SetParent(root) end
+    for name, obj in pairs(els) do
+        if name ~= "HUD" then obj:SetParent(root) end
     end
 end
 
@@ -125,65 +110,70 @@ function H.Message(text, seconds)
     messageTimer = seconds or 3.0
 end
 
-function H.Update(dt, S, P, Inv, Boat)
-    local h = ui("Health Bar")
-    if h then
-        h.Value = S.health / S.MAX_HEALTH
-        h.Text = string.format("Здоровье %d", math.floor(S.health + 0.5))
-    end
-    local hu = ui("Hunger Bar")
-    if hu then
-        hu.Value = S.hunger / S.MAX_HUNGER
-        hu.Text = string.format("Сытость %d", math.floor(S.hunger + 0.5))
-    end
-    local st = ui("Stamina Bar")
-    if st then
-        st.Value = S.stamina / S.MAX_STAMINA
-        st.Text = "Силы"
-    end
-    local ox = ui("Oxygen Bar")
-    if ox then
-        ox.Visible = P.headInWater or S.oxygen < S.MAX_OXYGEN - 0.01
-        ox.Value = S.oxygen / S.MAX_OXYGEN
-        ox.Text = "Воздух"
+local function needColor(value, low)
+    -- Шкала подсвечивается, только когда близка к нулю: постоянный красный
+    -- цвет в углу — это тревога, а игра сделана ровно про её отсутствие.
+    if value < low then return Vec4(0.95, 0.42, 0.32, 1.0) end
+    return nil
+end
+
+function H.Update(dt, S, P, Inv, Debris, Ship)
+    local bars = {
+        {"Food Bar", S.food / S.MAX_FOOD, "Сытость", 0.20},
+        {"Water Bar", S.water / S.MAX_WATER, "Жажда", 0.20},
+        {"Warm Bar", S.warm / S.MAX_WARM, "Тепло", 0.25},
+    }
+    for _, b in ipairs(bars) do
+        local e = ui(b[1])
+        if e then
+            e.Value = b[2]
+            e.Text = b[3]
+            local warn = needColor(b[2], b[4])
+            if warn then e.BarFillColor = warn end
+        end
     end
 
-    for i = 1, #Inv.hotbar do
+    for i = 1, #Blocks.hotbar do
         local slot = ui("Slot " .. i)
         if slot then
-            local id = Inv.hotbar[i]
+            local id = Blocks.hotbar[i]
             slot.Text = Blocks.Name(id) .. "\n" .. Inv.Count(id)
             if i == Inv.selected then
-                slot.BorderColor = Vec4(0.98, 0.85, 0.35, 1.0)
-                slot.Color = Vec4(0.16, 0.16, 0.10, 0.75)
+                slot.BorderColor = Vec4(0.98, 0.86, 0.48, 1.0)
+                slot.Color = Vec4(0.14, 0.13, 0.09, 0.62)
             else
-                slot.BorderColor = Vec4(0.25, 0.25, 0.28, 0.8)
-                slot.Color = Vec4(0.05, 0.06, 0.09, 0.55)
+                slot.BorderColor = Vec4(0.28, 0.28, 0.30, 0.7)
+                slot.Color = Vec4(0.04, 0.06, 0.10, 0.42)
             end
         end
     end
 
-    local obj = ui("Objective")
-    if obj then
-        obj.Text = string.format("%s  %s\nЛодка: %d/%d досок, %d/%d парусов\n%s",
-            S.Clock(), S.IsNight() and "ночь" or "день",
-            Boat.planks, Boat.needPlanks, Boat.sails, Boat.needSails,
-            Boat.ready and "Лодка готова! Нажми E у причала" or "Собери лодку на причале")
+    local j = ui("Journal")
+    if j then
+        j.Text = string.format("%s  %s\nПройдено: %.0f м\nВ трюме: обломки %d, верёвка %d, пластик %d\nНа палубе: %d блоков, мусора рядом: %d",
+            S.Clock(), S.IsNight() and "ночь" or "день", Ship.drift,
+            Inv.Count(Blocks.SCRAP), Inv.Count(Blocks.ROPE), Inv.Count(Blocks.PLASTIC),
+            Ship.BlockCount(), Debris.Count())
     end
 
-    -- Полоса добычи и подпись под прицелом появляются только по делу.
-    local bb = ui("Break Bar")
-    local la = ui("Looking At")
-    if P.target then
-        local hard = Blocks.Hardness(P.target.id)
-        if la then la.Text = Blocks.Name(P.target.id) end
-        if bb then
-            bb.Visible = P.breakProgress > 0.0 and hard ~= nil
-            bb.Value = hard and math.min(1.0, P.breakProgress / hard) or 0.0
+    -- Подсказка под прицелом: что перед тобой и что с этим можно сделать.
+    local prompt = ui("Prompt")
+    local bar = ui("Break Bar")
+    if prompt then
+        if P.aimDebris then
+            prompt.Text = P.aimDebris.kind.name .. "   [E] подобрать"
+        elseif P.target then
+            prompt.Text = Blocks.Name(P.target.id) .. "   [ЛКМ] разобрать"
+        elseif P.overboard then
+            prompt.Text = "Плыви к лодке"
+        else
+            prompt.Text = ""
         end
-    else
-        if la then la.Text = "" end
-        if bb then bb.Visible = false end
+    end
+    if bar then
+        local hard = P.target and Blocks.Hardness(P.target.id)
+        bar.Visible = P.breakProgress > 0.0 and hard ~= nil
+        bar.Value = hard and math.min(1.0, P.breakProgress / hard) or 0.0
     end
 
     if messageTimer > 0.0 then
