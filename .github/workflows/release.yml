@@ -1,0 +1,156 @@
+name: Сборка для скачивания
+
+# Готовая игра, которую можно скачать и запустить.
+#
+# Собирается тем же способом, что и кнопкой «Build» в редакторе, но без самого
+# редактора: тому нужен графический контекст, а на Windows-раннере его нет.
+# Раскладка папки один в один как у редакторской сборки (см. BuildGame в
+# EditorLayer.cpp) — плеер, ассеты движка, проект рядом:
+#
+#   TheBoat/
+#     TheBoat(.exe)   ← движок SAGE, переименованный в игру
+#     assets/         ← шейдеры и шрифты движка
+#     project/        ← сама игра: сцены, скрипты, материалы
+#
+# Где брать готовое:
+#   • каждый прогон — вкладка Actions, раздел Artifacts (хранится 90 дней);
+#   • на тег vX.Y.Z — в Releases, файлами.
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Linux x64
+            package: TheBoat-linux-x64
+          - os: windows-latest
+            label: Windows x64
+            package: TheBoat-windows-x64
+    steps:
+      - name: Checkout игры
+        uses: actions/checkout@v4
+        with:
+          path: game
+
+      - name: Checkout движка
+        uses: actions/checkout@v4
+        with:
+          repository: AmckinatorStudios/SAGE-Engine
+          ref: ${{ github.ref_name }}
+          path: engine
+        continue-on-error: true
+
+      # Ветка движка может не совпадать с веткой игры — тогда берём основную.
+      - name: Checkout движка (основная ветка)
+        if: hashFiles('engine/CMakeLists.txt') == ''
+        uses: actions/checkout@v4
+        with:
+          repository: AmckinatorStudios/SAGE-Engine
+          path: engine
+
+      - name: Зависимости сборки (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libx11-dev libxrandr-dev \
+            libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
+
+      - name: Сборка плеера
+        run: |
+          cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release -DSAGE_BUILD_SAMPLES=OFF
+          cmake --build engine/build --config Release -j 4 --target SagePlayer
+
+      # Раскладка та же, что делает редактор; собирается вручную, потому что
+      # редактору для запуска нужен OpenGL, а этому шагу — нет.
+      - name: Упаковать игру (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          OUT="${GITHUB_WORKSPACE}/dist/TheBoat"
+          mkdir -p "$OUT"
+          cp engine/build/runtime/SagePlayer "$OUT/TheBoat"
+          chmod +x "$OUT/TheBoat"
+          cp -r engine/build/runtime/assets "$OUT/assets"
+          cp -r game "$OUT/project"
+          rm -rf "$OUT/project/.git" "$OUT/project/.github"
+          [ -f game/sage.cfg ] && cp game/sage.cfg "$OUT/sage.cfg" || true
+
+      - name: Упаковать игру (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $out = "$env:GITHUB_WORKSPACE\dist\TheBoat"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $player = Get-ChildItem -Path engine\build\runtime -Recurse -Filter SagePlayer.exe |
+                    Select-Object -First 1
+          Copy-Item $player.FullName "$out\TheBoat.exe"
+          Copy-Item -Recurse "$($player.Directory.FullName)\assets" "$out\assets"
+          Copy-Item -Recurse game "$out\project"
+          Remove-Item -Recurse -Force "$out\project\.git","$out\project\.github" -ErrorAction Ignore
+          if (Test-Path game\sage.cfg) { Copy-Item game\sage.cfg "$out\sage.cfg" }
+
+      # Проверка, что упакованное ЗАПУСКАЕТСЯ: собрать нерабочий архив и залить
+      # его в релиз — худший из возможных исходов, потому что заметит это игрок.
+      - name: Проверить, что собранная игра стартует (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y xvfb
+          cd "${GITHUB_WORKSPACE}/dist/TheBoat"
+          xvfb-run -a env SAGE_GAME_ARGS="autopilot=1" \
+            SAGE_SCREENSHOT_AT_FRAME=300 \
+            SAGE_SCREENSHOT_PATH="${GITHUB_WORKSPACE}/smoke.png" \
+            ./TheBoat 2>&1 | tee "${GITHUB_WORKSPACE}/smoke.log"
+          if grep -q "ERROR" "${GITHUB_WORKSPACE}/smoke.log"; then
+            grep "ERROR" "${GITHUB_WORKSPACE}/smoke.log"; exit 1
+          fi
+          test "$(stat -c%s "${GITHUB_WORKSPACE}/smoke.png")" -gt 10240
+
+      - name: Архив
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.package }}
+          path: dist/TheBoat
+          if-no-files-found: error
+
+      - name: Кадр из собранной игры
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-screenshot
+          path: smoke.png
+          if-no-files-found: warn
+
+  release:
+    name: Выложить в Releases
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Собрать архивы
+        run: |
+          cd artifacts
+          for d in TheBoat-*; do
+            [ -d "$d" ] || continue
+            (cd "$d" && zip -qr "../$d.zip" .)
+          done
+          ls -la *.zip
+
+      - name: Релиз
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip
+          generate_release_notes: true

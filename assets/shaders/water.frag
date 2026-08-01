@@ -25,6 +25,7 @@ uniform float uFoamSharp;    // насколько узкая полоса пе�
 uniform float uRipple;       // сила мелкой ряби (наклон нормали)
 uniform float uOpacity;
 uniform float uTime;
+uniform float uReflectDistort; // насколько рябь ломает отражение (в долях экрана)
 
 #include <sage_pbr>
 
@@ -55,17 +56,29 @@ void main() {
 
     if (uShadingMode == 1) { FragColor = vec4(albedo, vAlpha); return; }
 
-    // Скользящий взгляд по воде отражает небо сильнее — грубое приближение
-    // Френеля, без него вода у горизонта выглядит краской, а не водой. Степень
-    // высокая и вклад умеренный намеренно: с пологой кривой всё море, которое
-    // видно с палубы, попадает в «скользящий взгляд» и выцветает в небо.
     vec3 V = normalize(uViewPos - FragPos);
     float fresnel = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0);
 
+    // Отражение. Раньше здесь стояла подмешка цвета неба по Френелю — заглушка,
+    // которая давала лишь «вода светлеет к горизонту». Теперь отражается
+    // НАСТОЯЩАЯ сцена: корабль, мусор, парус. Плоское отражение снято зеркально
+    // относительно уровня моря, читается по экранной позиции и ломается той же
+    // рябью, что наклоняет нормаль, — иначе отражение было бы стеклянно ровным
+    // на волнующейся воде.
+    //
+    // Смещение считается от НАКЛОНА, а не от высоты волны: сдвиг отражения — это
+    // то, куда «уехал» отражённый луч, а уезжает он именно из-за наклона.
+    vec2 distort = rippleSlope(FragPos.xz, uTime) * uRipple * uReflectDistort * vFade;
+    vec3 planar = SamplePlanar(distort);
+    float planarWeight = uPlanarEnabled ? 1.0 : 0.0;
+    // На гребнях с пеной отражение гасим: пена рассеивает свет, и зеркало на
+    // ней выглядит как плёнка масла.
+    planarWeight *= 1.0 - foam * 0.7;
+
     vec3 indirect = uLightmapEnabled ? texture(uLightmap, vec2(0.0)).rgb
                                      : DefaultIndirect(FragPos, N);
-    vec3 lit = ShadePBRgi(N, FragPos, albedo, 0.0, mix(0.16, 0.42, 1.0 - crest), 1.0, indirect);
-    lit = mix(lit, uAmbientSky, fresnel * 0.32);
+    vec3 lit = ShadePBRplanar(N, FragPos, albedo, 0.0, mix(0.05, 0.30, 1.0 - crest), 1.0, indirect,
+                              planar, planarWeight);
 
     // Прозрачность растёт к гребню: тонкая вершина волны просвечивает, толща
     // впадины — нет.

@@ -1,6 +1,14 @@
 {
-  "albedo": [1.0, 1.0, 1.0],
-  "emissive": [0.0, 0.0, 0.0],
+  "albedo": [
+    1.0,
+    1.0,
+    1.0
+  ],
+  "emissive": [
+    0.0,
+    0.0,
+    0.0
+  ],
   "metallic": 0.0,
   "roughness": 0.22,
   "opacity": 0.82,
@@ -11,11 +19,29 @@
   "params": {
     "uWaveHeight": 0.53,
     "uWaveFade": 70.0,
-    "uFocus": [0.0, 0.0, 0.0],
-    "uDeepColor": [0.05, 0.29, 0.43],
-    "uCrestColor": [0.34, 0.78, 0.84],
-    "uFoamColor": [0.92, 0.98, 1.0],
+    "uFocus": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "uDeepColor": [
+      0.05,
+      0.29,
+      0.43
+    ],
+    "uCrestColor": [
+      0.34,
+      0.78,
+      0.84
+    ],
+    "uFoamColor": [
+      0.92,
+      0.98,
+      1.0
+    ],
     "uFoamSharp": 0.74,
-    "uRipple": 0.12
-  }
+    "uRipple": 0.12,
+    "uReflectDistort": 0.05
+  },
+  "planarReflectivity": 1.0
 }
