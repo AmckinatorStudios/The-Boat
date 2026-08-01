@@ -106,7 +106,7 @@ local function onCollectDebris(it)
     for _, entry in ipairs(loot) do
         parts[#parts + 1] = Blocks.Name(entry[1]) .. " x" .. entry[2]
     end
-    HUD.Message(name .. ": " .. table.concat(parts, ", "), 2.2)
+    HUD.Message(name .. ": " .. table.concat(parts, ", "), 2.2, "bag")
 end
 
 local function onBreak(x, y, z, id)
@@ -119,25 +119,25 @@ local function onBreak(x, y, z, id)
     -- Разобранный блок возвращается материалом: разбирать свой корабль — такой
     -- же законный способ добыть доску, как выловить её из воды.
     Inv.Add(id, 1)
-    HUD.Message("Разобрано: " .. Blocks.Name(id), 1.6)
+    HUD.Message("Разобрано: " .. Blocks.Name(id), 1.6, Blocks.Icon(id))
     structureDirty = true
     if autopilot then autopilot.NoteBroken() end
 end
 
 local function onPlace(x, y, z, id)
     structureDirty = true
-    if id == Blocks.LANTERN then HUD.Message("Фонарь зажжён", 2.0) end
+    if id == Blocks.LANTERN then HUD.Message("Фонарь зажжён", 2.0, "lantern") end
     if autopilot then autopilot.NotePlaced() end
 end
 
 local function onOverboard()
-    HUD.Message("За бортом! Плыви к лодке", 3.5)
+    HUD.Message("За бортом! Плыви к лодке", 3.5, "wave")
     local wx, wy, wz = P.WorldPos()
     splash(wx, wy, wz, Vec3(0.6, 0.8, 0.9), 24)
 end
 
 local function onAboard()
-    HUD.Message("Снова на палубе", 2.0)
+    HUD.Message("Снова на палубе", 2.0, "boat")
 end
 
 -- Пересчитать «инфраструктуру» палубы: где фонари (тепло/свет), где сети
@@ -196,7 +196,7 @@ function OnStart(entity)
     S.Init{ship = Ship}
 
     HUD.Build()
-    HUD.Message("Океан во все стороны. Лови, что несёт течением.", 7.0)
+    HUD.Message("Океан во все стороны. Лови, что несёт течением.", 7.0, "compass")
     purifierCount = rescanStructures()
     structureDirty = false
 
@@ -223,7 +223,7 @@ local function handleActions(dt, input)
         local recipe = Inv.recipes[input.craft]
         if recipe then
             local ok, text = Inv.Craft(recipe)
-            HUD.Message(text, 2.2)
+            HUD.Message(text, 2.2, "check")
         end
     end
 
@@ -231,9 +231,9 @@ local function handleActions(dt, input)
         local id, value = Inv.EatBest()
         if id then
             S.Feed(value)
-            HUD.Message(Blocks.Name(id) .. ": сытость +" .. math.floor(value), 2.0)
+            HUD.Message(Blocks.Name(id) .. ": сытость +" .. math.floor(value), 2.0, Blocks.Icon(id))
         else
-            HUD.Message("Нечего есть — лови рыбу или собирай водоросли", 2.4)
+            HUD.Message("Нечего есть — лови рыбу или собирай водоросли", 2.4, "food")
         end
     end
 
@@ -241,28 +241,28 @@ local function handleActions(dt, input)
         local id, value = Inv.DrinkBest()
         if id then
             S.Drink(value)
-            HUD.Message("Пресная вода: жажда +" .. math.floor(value), 2.0)
+            HUD.Message("Пресная вода: жажда +" .. math.floor(value), 2.0, "drop")
         else
-            HUD.Message("Нет пресной воды — нужен опреснитель", 2.4)
+            HUD.Message("Нет пресной воды — нужен опреснитель", 2.4, "purifier")
         end
     end
 
     -- Рыбалка: удочка + стоять у борта. Ждать приходится — это и есть занятие.
     if input.fishPressed then
         if not Inv.Has(Blocks.ROD) then
-            HUD.Message("Нужна удочка (крафт 7)", 2.4)
+            HUD.Message("Нужна удочка (крафт 7)", 2.4, "rod")
         elseif fishTimer > 0.0 then
-            HUD.Message(string.format("Клюёт... %.0f с", fishTimer), 1.5)
+            HUD.Message(string.format("Клюёт... %.0f с", fishTimer), 1.5, "hook")
         else
             fishTimer = 7.0
-            HUD.Message("Закинул удочку", 2.0)
+            HUD.Message("Закинул удочку", 2.0, "rod")
         end
     end
     if fishTimer > 0.0 then
         fishTimer = fishTimer - dt
         if fishTimer <= 0.0 then
             Inv.Add(Blocks.FISH, 1)
-            HUD.Message("Поймана рыба!", 2.5)
+            HUD.Message("Поймана рыба!", 2.5, "fish")
             local wx, wy, wz = P.WorldPos()
             splash(wx, wy - 0.5, wz, Vec3(0.7, 0.85, 0.95), 14)
         end

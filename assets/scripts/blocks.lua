@@ -35,36 +35,39 @@ Blocks.SEAWEED  = 25
 Blocks.WATER    = 26  -- пресная вода
 Blocks.ROD      = 27  -- удочка (инструмент)
 
+-- icon — имя векторной иконки движка (sage::ui::IconNames). Здесь, а не в
+-- худе: иконка описывает ПРЕДМЕТ, ровно как его имя и цвет, и должна ехать
+-- вместе с ними — иначе новый блок придётся заводить в двух местах.
 local D = {
     -- solid — держит игрока (леер тоже: он ограждение, сквозь него не ходят,
     -- иначе борта не спасают от падения за борт); opaque — закрывает грань
     -- соседа, и вот этого леер как раз не делает: сквозь него видно воду.
-    [Blocks.PLANK]    = {name = "Доска",       color = {0.74, 0.49, 0.25}, solid = true,  opaque = true,  hard = 0.55, place = true},
-    [Blocks.BEAM]     = {name = "Балка",       color = {0.42, 0.26, 0.14}, solid = true,  opaque = true,  hard = 0.9,  place = true},
-    [Blocks.RAIL]     = {name = "Леер",        color = {0.56, 0.35, 0.18}, solid = true,  opaque = false, hard = 0.35, place = true},
-    [Blocks.WALL]     = {name = "Стена",       color = {0.82, 0.66, 0.42}, solid = true,  opaque = true,  hard = 0.7,  place = true},
-    [Blocks.ROOF]     = {name = "Крыша",       color = {0.46, 0.22, 0.17}, solid = true,  opaque = true,  hard = 0.7,  place = true},
-    [Blocks.MAST]     = {name = "Мачта",       color = {0.38, 0.23, 0.12}, solid = true,  opaque = true,  hard = 1.1,  place = true},
-    [Blocks.SAIL]     = {name = "Парус",       color = {0.97, 0.94, 0.86}, solid = true,  opaque = true,  hard = 0.4,  place = true},
-    [Blocks.BARREL]   = {name = "Бочка",       color = {0.52, 0.30, 0.15}, solid = true,  opaque = true,  hard = 0.6,  place = true},
-    [Blocks.CRATE]    = {name = "Ящик",        color = {0.70, 0.53, 0.27}, solid = true,  opaque = true,  hard = 0.6,  place = true},
-    [Blocks.LANTERN]  = {name = "Фонарь",      color = {1.00, 0.78, 0.42}, solid = true,  opaque = false, hard = 0.4,  place = true, light = true},
-    [Blocks.PURIFIER] = {name = "Опреснитель", color = {0.55, 0.62, 0.66}, solid = true,  opaque = true,  hard = 0.8,  place = true},
-    [Blocks.NET]      = {name = "Сеть",        color = {0.72, 0.70, 0.52}, solid = true,  opaque = false, hard = 0.35, place = true},
-    [Blocks.PLANTER]  = {name = "Грядка",      color = {0.30, 0.42, 0.24}, solid = true,  opaque = true,  hard = 0.5,  place = true},
+    [Blocks.PLANK]    = {name = "Доска",       icon = "plank",    color = {0.74, 0.49, 0.25}, solid = true,  opaque = true,  hard = 0.55, place = true},
+    [Blocks.BEAM]     = {name = "Балка",       icon = "log",      color = {0.42, 0.26, 0.14}, solid = true,  opaque = true,  hard = 0.9,  place = true},
+    [Blocks.RAIL]     = {name = "Леер",        icon = "rail",     color = {0.56, 0.35, 0.18}, solid = true,  opaque = false, hard = 0.35, place = true},
+    [Blocks.WALL]     = {name = "Стена",       icon = "wall",     color = {0.82, 0.66, 0.42}, solid = true,  opaque = true,  hard = 0.7,  place = true},
+    [Blocks.ROOF]     = {name = "Крыша",       icon = "wall",     color = {0.46, 0.22, 0.17}, solid = true,  opaque = true,  hard = 0.7,  place = true},
+    [Blocks.MAST]     = {name = "Мачта",       icon = "log",      color = {0.38, 0.23, 0.12}, solid = true,  opaque = true,  hard = 1.1,  place = true},
+    [Blocks.SAIL]     = {name = "Парус",       icon = "sail",     color = {0.97, 0.94, 0.86}, solid = true,  opaque = true,  hard = 0.4,  place = true},
+    [Blocks.BARREL]   = {name = "Бочка",       icon = "barrel",   color = {0.52, 0.30, 0.15}, solid = true,  opaque = true,  hard = 0.6,  place = true},
+    [Blocks.CRATE]    = {name = "Ящик",        icon = "crate",    color = {0.70, 0.53, 0.27}, solid = true,  opaque = true,  hard = 0.6,  place = true},
+    [Blocks.LANTERN]  = {name = "Фонарь",      icon = "lantern",  color = {1.00, 0.78, 0.42}, solid = true,  opaque = false, hard = 0.4,  place = true, light = true},
+    [Blocks.PURIFIER] = {name = "Опреснитель", icon = "purifier", color = {0.55, 0.62, 0.66}, solid = true,  opaque = true,  hard = 0.8,  place = true},
+    [Blocks.NET]      = {name = "Сеть",        icon = "net",      color = {0.72, 0.70, 0.52}, solid = true,  opaque = false, hard = 0.35, place = true},
+    [Blocks.PLANTER]  = {name = "Грядка",      icon = "leaf",     color = {0.30, 0.42, 0.24}, solid = true,  opaque = true,  hard = 0.5,  place = true},
 
     -- предметы
-    [Blocks.SCRAP]    = {name = "Обломки",     color = {0.60, 0.44, 0.28}},
-    [Blocks.ROPE]     = {name = "Верёвка",     color = {0.78, 0.70, 0.48}},
-    [Blocks.CLOTH]    = {name = "Ткань",       color = {0.88, 0.86, 0.80}},
-    [Blocks.PLASTIC]  = {name = "Пластик",     color = {0.62, 0.78, 0.80}},
-    [Blocks.FISH]     = {name = "Рыба",        color = {0.68, 0.74, 0.80}, food = 30.0},
-    [Blocks.SEAWEED]  = {name = "Водоросли",   color = {0.30, 0.52, 0.32}, food = 12.0},
-    [Blocks.WATER]    = {name = "Вода",        color = {0.55, 0.80, 0.92}, drink = 35.0},
-    [Blocks.ROD]      = {name = "Удочка",      color = {0.72, 0.62, 0.40}, tool = true},
+    [Blocks.SCRAP]    = {name = "Обломки",     icon = "plank",    color = {0.60, 0.44, 0.28}},
+    [Blocks.ROPE]     = {name = "Верёвка",     icon = "rope",     color = {0.78, 0.70, 0.48}},
+    [Blocks.CLOTH]    = {name = "Ткань",       icon = "cloth",    color = {0.88, 0.86, 0.80}},
+    [Blocks.PLASTIC]  = {name = "Пластик",     icon = "plastic",  color = {0.62, 0.78, 0.80}},
+    [Blocks.FISH]     = {name = "Рыба",        icon = "fish",     color = {0.68, 0.74, 0.80}, food = 30.0},
+    [Blocks.SEAWEED]  = {name = "Водоросли",   icon = "leaf",     color = {0.30, 0.52, 0.32}, food = 12.0},
+    [Blocks.WATER]    = {name = "Вода",        icon = "drop",     color = {0.55, 0.80, 0.92}, drink = 35.0},
+    [Blocks.ROD]      = {name = "Удочка",      icon = "rod",      color = {0.72, 0.62, 0.40}, tool = true},
 }
 
-local AIR_DEF = {name = "Пусто", solid = false, opaque = false}
+local AIR_DEF = {name = "Пусто", icon = "cross", solid = false, opaque = false}
 
 function Blocks.Def(id)
     if id == Blocks.AIR then return AIR_DEF end
@@ -74,6 +77,11 @@ end
 function Blocks.Name(id)
     local d = Blocks.Def(id)
     return d and d.name or "?"
+end
+
+function Blocks.Icon(id)
+    local d = Blocks.Def(id)
+    return d and d.icon or "crate"
 end
 
 function Blocks.IsSolid(id)

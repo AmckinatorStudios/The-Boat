@@ -1,0 +1,74 @@
+// Освещение — движковое: директива подставляет тот же PBR-блок, которым движок
+// рисует всё остальное. Свой шейдер нужен воде ради ФОРМЫ волны и пены, а не
+// ради своей модели света: копия BRDF немедленно разошлась бы с оригиналом, и
+// вода перестала бы совпадать по свету с палубой, на которой стоит игрок.
+#version 330 core
+in vec3 FragPos;
+in vec3 Normal;
+in vec3 vColor;
+in float vAlpha;
+in float vCrest;
+in float vFade;
+out vec4 FragColor;
+
+uniform bool uLightmapEnabled;
+uniform sampler2D uLightmap;
+
+// Цвет воды приходит ПАРАМЕТРАМИ МАТЕРИАЛА, а не цветом сущности: назначенный
+// материал заменяет собой Color сущности (EffectiveColor в движке), да и одно
+// число на всю воду честнее двух тысяч одинаковых. Игра меняет их по времени
+// суток — закат красит море, а не только небо.
+uniform vec3  uDeepColor;    // цвет впадины (спокойная вода)
+uniform vec3  uCrestColor;   // цвет гребня
+uniform vec3  uFoamColor;    // цвет пены на верхушках
+uniform float uFoamSharp;    // насколько узкая полоса пены
+uniform float uRipple;       // сила мелкой ряби (наклон нормали)
+uniform float uOpacity;
+uniform float uTime;
+
+#include <sage_pbr>
+
+// Рябь считается ЗДЕСЬ, а не в вершинах: плитка воды — два треугольника на
+// четыре метра, и волна с метровым периодом в вершинах превратилась бы в шум.
+// В высоту рябь не идёт намеренно — высоту знает и ocean.lua, по ней качается
+// лодка, и трясти корабль сантиметровой рябью незачем.
+vec2 rippleSlope(vec2 p, float t) {
+    return vec2(cos(p.x * 1.7 + t * 1.3) * sin(p.y * 0.9 - t * 0.7)
+              + cos(p.x * 3.1 - t * 0.9) * 0.4,
+                cos(p.y * 1.5 - t * 1.1) * sin(p.x * 1.1 + t * 0.6)
+              + cos(p.y * 2.7 + t * 1.2) * 0.4);
+}
+
+void main() {
+    vec3 N = normalize(Normal);
+    // Рябь наклоняет нормаль поверхности, но не трогает борта плитки.
+    N = normalize(N + vec3(rippleSlope(FragPos.xz, uTime) * uRipple * vFade, 0.0).xzy);
+    if (uShadingMode == 2) { FragColor = vec4(N * 0.5 + 0.5, 1.0); return; }
+
+    // Цвет воды — от впадины к гребню.
+    float crest = clamp(vCrest * 0.5 + 0.5, 0.0, 1.0);
+    vec3 albedo = mix(uDeepColor, uCrestColor, crest);
+
+    // Пена на самых верхушках: узкая полоса, иначе море становится молочным.
+    float foam = smoothstep(uFoamSharp, 1.0, crest);
+    albedo = mix(albedo, uFoamColor, foam * 0.4);
+
+    if (uShadingMode == 1) { FragColor = vec4(albedo, vAlpha); return; }
+
+    // Скользящий взгляд по воде отражает небо сильнее — грубое приближение
+    // Френеля, без него вода у горизонта выглядит краской, а не водой. Степень
+    // высокая и вклад умеренный намеренно: с пологой кривой всё море, которое
+    // видно с палубы, попадает в «скользящий взгляд» и выцветает в небо.
+    vec3 V = normalize(uViewPos - FragPos);
+    float fresnel = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0);
+
+    vec3 indirect = uLightmapEnabled ? texture(uLightmap, vec2(0.0)).rgb
+                                     : DefaultIndirect(FragPos, N);
+    vec3 lit = ShadePBRgi(N, FragPos, albedo, 0.0, mix(0.16, 0.42, 1.0 - crest), 1.0, indirect);
+    lit = mix(lit, uAmbientSky, fresnel * 0.32);
+
+    // Прозрачность растёт к гребню: тонкая вершина волны просвечивает, толща
+    // впадины — нет.
+    float alpha = clamp(vAlpha + foam * 0.2 + fresnel * 0.18, 0.0, 1.0);
+    FragColor = vec4(lit, alpha);
+}
