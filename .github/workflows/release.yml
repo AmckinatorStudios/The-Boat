@@ -131,7 +131,17 @@ jobs:
   release:
     name: Выложить в Releases
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Не только на тег, но и на основную ветку.
+    #
+    # Раньше релиз собирался ИСКЛЮЧИТЕЛЬНО по тегу vX.Y.Z — и пока такого тега
+    # никто не поставил, скачать игру было неоткуда: сборки лежали во вкладке
+    # Actions, живут 90 дней и требуют залогиненного аккаунта GitHub. Для игры,
+    # которую хочется просто дать поиграть, это равносильно её отсутствию.
+    #
+    # Теперь ровно как у движка: каждая правка main обновляет скользящий релиз
+    # «latest» (старый удаляется, ссылка всегда ведёт на свежую сборку), а тег
+    # по-прежнему делает отдельный постоянный релиз версии.
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -150,7 +160,19 @@ jobs:
           ls -la *.zip
 
       - name: Релиз
-        uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/*.zip
-          generate_release_notes: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG="${{ github.ref_name }}"
+            TITLE="The Boat $TAG"
+          else
+            TAG="latest"
+            TITLE="The Boat — последняя сборка"
+            # Скользящий релиз: старый удаляем вместе с тегом, чтобы ссылка
+            # всегда вела на свежую версию, а список релизов не зарастал.
+            gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          fi
+          gh release create "$TAG" artifacts/*.zip \
+            --title "$TITLE" \
+            --notes "Скачайте архив для своей системы, распакуйте папку ЦЕЛИКОМ и запустите TheBoat (на Windows — TheBoat.exe). Устанавливать ничего не нужно. Прогресс сохраняется сам раз в 30 секунд и переживает выход из игры."
