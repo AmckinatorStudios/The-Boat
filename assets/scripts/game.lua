@@ -27,6 +27,15 @@ local fishTimer = 0.0
 local lanterns = {}     -- мировые координаты фонарей (тепло + свет)
 local nets = {}         -- мировые координаты сетей (притягивают мусор)
 local structureDirty = true
+local saveSlot = "main"
+local autoSaveTimer = 0.0
+local daysPassed = 0.0
+-- Версия формата прогресса. Растёт при ЛОМАЮЩЕМ изменении: добавление поля её
+-- не двигает, старые сохранения читаются без него как раньше.
+local SAVE_VERSION = 1
+-- Автосохранение раз в полминуты. Не по событию «поставил блок»: в этой игре
+-- блоки ставят пачками, и запись на каждый означала бы сотни записей в минуту.
+local AUTOSAVE_EVERY = 30.0
 
 -- --- Раскладка --------------------------------------------------------------
 local function bindControls()
@@ -226,8 +235,43 @@ function OnStart(entity)
                        survival = S, log = log}
     end
 
+    -- Загрузка прогресса. ПОСЛЕ того как мир построен: Restore заменяет
+    -- стартовый плот сохранённой лодкой, и делать это до Ship.Init было бы не
+    -- на чем.
+    local slot = LaunchArg("save") or "main"
+    local saved = sage.save.Read(slot)
+    if saved then
+        local blocks = Ship.Restore(saved.ship)
+        Inv.Restore(saved.inventory)
+        S.Restore(saved.survival)
+        if saved.drift then Ship.drift = saved.drift end
+        structureDirty = true
+        HUD.Message(("Продолжаем. Лодка: %d блоков, день %d."):format(
+            blocks, math.floor((saved.days or 0) + 1)), 6.0, "compass")
+        log(("THEBOAT: загружено сохранение '%s' (%d блоков)"):format(slot, blocks))
+    end
+    saveSlot = slot
+
     started = true
     log("THEBOAT: READY")
+end
+
+-- --- Сохранение -------------------------------------------------------------
+--
+-- Прогресс, а не сцена: расстановка объектов уровня одинакова у всех игроков и
+-- живёт в .sage рядом с игрой, а вот построенная лодка, инвентарь и время
+-- суток принадлежат одному человеку. Пишется в пользовательский каталог, через
+-- временный файл с переименованием — падение посреди записи не должно уносить
+-- предыдущее сохранение.
+function SaveProgress()
+    if not started then return false end
+    return sage.save.Write(saveSlot or "main", {
+        ship      = Ship.Snapshot(),
+        inventory = Inv.Snapshot(),
+        survival  = S.Snapshot(),
+        drift     = Ship.drift,
+        days      = math.floor(daysPassed),
+    }, SAVE_VERSION)
 end
 
 -- --- Действия, не относящиеся к движению ------------------------------------
@@ -312,6 +356,17 @@ function OnUpdate(entity, dt)
 
     handleActions(dt, input)
     S.Update(dt, P, input, lanterns)
+
+    daysPassed = daysPassed + dt / S.DAY_LENGTH
+
+    -- Автосохранение. По таймеру, а не по событию «поставил блок»: блоки в этой
+    -- игре ставят пачками, и запись на каждый означала бы сотни записей в
+    -- минуту вместо двух.
+    autoSaveTimer = autoSaveTimer + dt
+    if autoSaveTimer >= AUTOSAVE_EVERY then
+        autoSaveTimer = 0.0
+        SaveProgress()
+    end
 
     if structureDirty then
         purifierCount = rescanStructures()

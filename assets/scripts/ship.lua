@@ -395,4 +395,48 @@ end
 function Ship.Root() return root end
 function Ship.BlockCount() return blockCount end
 
+-- --- Сохранение постройки ---------------------------------------------------
+--
+-- Лодка — это то, ради чего в игру и заходят: она собирается часами и обязана
+-- пережить выход. Пишем ПЛОСКИЙ список {x, y, z, id}, а не карту ключей: ключ
+-- считается из границ, а границы — величина кода, и стоит их однажды
+-- поменять, как все старые сохранения молча съедут на несколько блоков.
+-- Координаты в файле переживают такую правку, ключ — нет.
+function Ship.Snapshot()
+    local out = {}
+    for z = Ship.MIN_Z, Ship.MAX_Z do
+        for y = Ship.MIN_Y, Ship.MAX_Y do
+            for x = Ship.MIN_X, Ship.MAX_X do
+                local id = cells[key(x, y, z)]
+                if id and id ~= AIR then
+                    out[#out + 1] = {x, y, z, id}
+                end
+            end
+        end
+    end
+    return out
+end
+
+function Ship.Restore(list)
+    if type(list) ~= "table" then return 0 end
+    -- Снимаем то, что уже стоит: загрузка обязана ЗАМЕНИТЬ лодку, а не
+    -- достроить её поверх начальной — иначе после каждой загрузки на палубе
+    -- копятся блоки из стартового плота.
+    for z = Ship.MIN_Z, Ship.MAX_Z do
+        for y = Ship.MIN_Y, Ship.MAX_Y do
+            for x = Ship.MIN_X, Ship.MAX_X do
+                if cells[key(x, y, z)] then Ship.SetBlock(x, y, z, AIR, true) end
+            end
+        end
+    end
+    local placed = 0
+    for _, b in ipairs(list) do
+        if #b >= 4 then
+            Ship.SetBlock(b[1], b[2], b[3], b[4], true)
+            placed = placed + 1
+        end
+    end
+    return placed
+end
+
 return Ship

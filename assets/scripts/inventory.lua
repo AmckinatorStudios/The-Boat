@@ -123,4 +123,22 @@ function Inv.Summary()
         Inv.Count(Blocks.FISH) + Inv.Count(Blocks.SEAWEED), Inv.Count(Blocks.WATER))
 end
 
+-- Инвентарь целиком: что и сколько лежит, плюс выбранный слот.
+function Inv.Snapshot()
+    local items = {}
+    for id, n in pairs(counts) do
+        if n > 0 then items[#items + 1] = {id, n} end
+    end
+    return {items = items, selected = Inv.selected}
+end
+
+function Inv.Restore(data)
+    if type(data) ~= "table" then return end
+    counts = {}
+    for _, e in ipairs(data.items or {}) do
+        if #e >= 2 then counts[e[1]] = e[2] end
+    end
+    if data.selected then Inv.Select(data.selected) end
+end
+
 return Inv

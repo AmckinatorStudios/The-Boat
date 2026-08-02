@@ -181,4 +181,20 @@ function S.UpdateSky()
     Ocean.SetMood(pal.sea, pal.crest)
 end
 
+-- Состояние выживания: голод, жажда, тепло и время суток. Время сохраняем
+-- тоже — иначе загрузка всегда возвращала бы игрока в позднее утро, и ночь,
+-- к которой он готовился, не наступала бы никогда.
+function S.Snapshot()
+    return {food = S.food, water = S.water, warm = S.warm, rested = S.rested, time = S.time}
+end
+
+function S.Restore(d)
+    if type(d) ~= "table" then return end
+    S.food   = d.food   or S.food
+    S.water  = d.water  or S.water
+    S.warm   = d.warm   or S.warm
+    S.rested = d.rested or S.rested
+    S.time   = d.time   or S.time
+end
+
 return S
