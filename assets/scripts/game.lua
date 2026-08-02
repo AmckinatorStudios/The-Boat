@@ -177,6 +177,9 @@ local purifierCount = 0
 
 -- --- Старт ------------------------------------------------------------------
 function OnStart(entity)
+    -- Считается ОДИН раз и в самом начале: от него зависят и запуск автопилота,
+    -- и то, грузить ли сохранение.
+    local autopilotWanted = LaunchFlag("autopilot")
     local seed = tonumber(LaunchArg("seed") or "") or 20240517
     log("THEBOAT: старт, seed=" .. seed)
 
@@ -229,7 +232,7 @@ function OnStart(entity)
     Ship.Update(0.0)
     S.UpdateSky()
 
-    if LaunchFlag("autopilot") then
+    if autopilotWanted then
         autopilot = require "autopilot"
         autopilot.Init{ship = Ship, player = P, inventory = Inv, debris = Debris,
                        survival = S, log = log}
@@ -238,8 +241,14 @@ function OnStart(entity)
     -- Загрузка прогресса. ПОСЛЕ того как мир построен: Restore заменяет
     -- стартовый плот сохранённой лодкой, и делать это до Ship.Init было бы не
     -- на чем.
-    local slot = LaunchArg("save") or "main"
-    local saved = sage.save.Read(slot)
+    -- Автопрогон играет с ЧИСТОГО листа и в свой слот.
+    --
+    -- Иначе проверка перестаёт быть проверкой: второй запуск продолжал бы
+    -- партию первого, лодка была бы уже построена, и «автопилот прожил день»
+    -- означало бы «автопилот доиграл чужую партию». Ровно на этом --check и
+    -- сломался, как только появились сохранения.
+    local slot = LaunchArg("save") or (autopilotWanted and "autopilot" or "main")
+    local saved = not autopilotWanted and sage.save.Read(slot) or nil
     if saved then
         local blocks = Ship.Restore(saved.ship)
         Inv.Restore(saved.inventory)
