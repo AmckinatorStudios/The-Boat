@@ -162,6 +162,11 @@ jobs:
       - name: Релиз
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # --repo обязателен: эта задача НЕ делает checkout (ей нужны только
+          # артефакты сборки), а gh без репозитория рядом пытается определить
+          # его через git и падает с «not a git repository». Забирать сюда весь
+          # исходник ради одной строчки — дороже, чем назвать репозиторий явно.
+          REPO: ${{ github.repository }}
         run: |
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             TAG="${{ github.ref_name }}"
@@ -171,8 +176,8 @@ jobs:
             TITLE="The Boat — последняя сборка"
             # Скользящий релиз: старый удаляем вместе с тегом, чтобы ссылка
             # всегда вела на свежую версию, а список релизов не зарастал.
-            gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+            gh release delete "$TAG" --repo "$REPO" --yes --cleanup-tag 2>/dev/null || true
           fi
-          gh release create "$TAG" artifacts/*.zip \
+          gh release create "$TAG" artifacts/*.zip --repo "$REPO" \
             --title "$TITLE" \
             --notes "Скачайте архив для своей системы, распакуйте папку ЦЕЛИКОМ и запустите TheBoat (на Windows — TheBoat.exe). Устанавливать ничего не нужно. Прогресс сохраняется сам раз в 30 секунд и переживает выход из игры."
