@@ -191,9 +191,12 @@ function OnStart(entity)
     -- проход, а волна у каждой плитки своя. Расхождение съедает та же рябь,
     -- которой отражение и ломается, — на глаз оно незаметно, а честное
     -- отражение по каждой волне стоило бы прохода геометрии на волну.
-    SetReflectionsEnabled(true)
-    SetWaterReflection(Ocean.SEA_LEVEL)
-    SetPlanarReflectionScale(0.5)
+    -- Через модули движка (sage.*), а не через глобальные имена: так видно, к
+    -- какой области относится вызов, и своя функция игры с тем же именем ничего
+    -- не затрёт. Старые глобальные имена движок по-прежнему понимает.
+    sage.reflect.SetEnabled(true)
+    sage.reflect.SetWater(Ocean.SEA_LEVEL)
+    sage.reflect.SetPlanarScale(0.5)
 
     P.Init{
         inventory = Inv,

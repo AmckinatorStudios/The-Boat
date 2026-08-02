@@ -137,7 +137,7 @@ function Ocean.Update(dt, px, pz)
     recenter(px, pz)
     -- Центр затухания волн едет за лодкой: у шейдера нет способа узнать, где
     -- она, иначе как параметром.
-    SetMaterialParam(WATER, "uFocus", Vec3(px, 0.0, pz))
+    sage.render.SetMaterialParam(WATER, "uFocus", Vec3(px, 0.0, pz))
 end
 
 -- Цвет воды подстраивается под время суток (закат красит море, а не только
@@ -146,8 +146,8 @@ end
 -- ради смены оттенка весь океан незачем.
 function Ocean.SetMood(calm, crest)
     calmColor, crestColor = calm, crest
-    SetMaterialParam(WATER, "uDeepColor", Vec3(calm[1], calm[2], calm[3]))
-    SetMaterialParam(WATER, "uCrestColor", Vec3(crest[1], crest[2], crest[3]))
+    sage.render.SetMaterialParam(WATER, "uDeepColor", Vec3(calm[1], calm[2], calm[3]))
+    sage.render.SetMaterialParam(WATER, "uCrestColor", Vec3(crest[1], crest[2], crest[3]))
 end
 
 function Ocean.TileCount() return (Ocean.RADIUS * 2 + 1) ^ 2 end
