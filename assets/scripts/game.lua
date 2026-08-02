@@ -345,7 +345,7 @@ local function handleActions(dt, input)
     -- Фонарик (L). Ночью на палубе без него не видно, куда ставишь блок, а
     -- ставить блоки — основное занятие; днём он просто не нужен и выключен.
     if input.flashlightPressed then
-        local on = Player.ToggleFlashlight()
+        local on = P.ToggleFlashlight()
         HUD.Message(on and "Фонарик включён" or "Фонарик выключен", 1.4, "lamp")
     end
 

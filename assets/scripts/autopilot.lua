@@ -22,6 +22,7 @@ local state = "gather"
 local stateTime = 0.0
 local totalTime = 0.0
 local done = false
+local flashlightWasOn = false   -- состояние фонарика ДО нажатия L (см. состояние "flashlight")
 local target = nil
 local built, dismantled = 0, 0
 local checklist = {gather = false, craft = false, build = false,
@@ -367,19 +368,30 @@ function A.Update(dt)
             -- Фонарик — тем же способом, что и человек: намерением, а не
             -- прямым вызовом. Иначе прогон проверял бы функцию, а не клавишу.
             input.flashlightPressed = true
-            checklist.flashlight = P.ToggleFlashlight() ~= nil
-            log("THEBOAT: фонарик переключён, включён=" .. tostring(P.flashlightOn))
-            log("THEBOAT: фонарей на палубе: " .. Ship.CountBlocks(Blocks.LANTERN))
-            -- Итог прогона: что из систем реально сработало.
-            local ok = checklist.gather and checklist.craft and checklist.build
-                       and checklist.dismantle and checklist.lantern
-                       and checklist.flashlight
-            log(string.format("THEBOAT: LIVING ABOARD — выловлено %d, палуба %d блоков, путь %.0f м",
-                Debris.Collected(), Ship.BlockCount(), Ship.drift))
-            if ok then log("THEBOAT: ROUTINE OK") else log("THEBOAT: FAIL не все действия удались") end
-            setState("idle")
-            done = true
+            flashlightWasOn = P.flashlightOn
+            setState("flashlight")
         end
+
+    -- Отдельный шаг, а не хвост предыдущего: намерение «нажал L» разбирает
+    -- игра, и разбирает ПОСЛЕ автопилота — значит и результат виден только на
+    -- следующем кадре. Раньше здесь стоял ещё и прямой вызов
+    -- P.ToggleFlashlight(), и он всё ломал дважды: фонарик переключался два
+    -- раза (то есть возвращался в исходное состояние), а проверка `~= nil`
+    -- была верна всегда — функция не возвращает nil никогда, — то есть не
+    -- проверяла ничего.
+    elseif state == "flashlight" then
+        checklist.flashlight = (P.flashlightOn ~= flashlightWasOn)
+        log("THEBOAT: фонарик переключён, включён=" .. tostring(P.flashlightOn))
+        log("THEBOAT: фонарей на палубе: " .. Ship.CountBlocks(Blocks.LANTERN))
+        -- Итог прогона: что из систем реально сработало.
+        local ok = checklist.gather and checklist.craft and checklist.build
+                   and checklist.dismantle and checklist.lantern
+                   and checklist.flashlight
+        log(string.format("THEBOAT: LIVING ABOARD — выловлено %d, палуба %d блоков, путь %.0f м",
+            Debris.Collected(), Ship.BlockCount(), Ship.drift))
+        if ok then log("THEBOAT: ROUTINE OK") else log("THEBOAT: FAIL не все действия удались") end
+        setState("idle")
+        done = true
     end
 
     return input
