@@ -28,6 +28,8 @@ local lanterns = {}     -- мировые координаты фонарей (�
 local nets = {}         -- мировые координаты сетей (притягивают мусор)
 local structureDirty = true
 local saveSlot = "main"
+local startLook = nil   -- {yaw, pitch} из --look, если задан
+local startAt = nil     -- {x, y, z} из --at, если задан
 local autoSaveTimer = 0.0
 local daysPassed = 0.0
 -- Версия формата прогресса. Растёт при ЛОМАЮЩЕМ изменении: добавление поля её
@@ -191,6 +193,23 @@ function OnStart(entity)
     local t0 = tonumber(LaunchArg("time") or "")
     if t0 then S.time = t0 % 1.0 end
 
+    -- Куда смотреть на старте (--look=0 — на нос корабля, --look=180,20 — в
+    -- небо за кормой). Ровно та же нужда, что и у --time: снять скриншот
+    -- конкретного места или проверить ночную механику, не крутя мышью вручную.
+    local lookArg = LaunchArg("look")
+    if lookArg then
+        local ly, lp = lookArg:match("^([^,]+),(.+)$")
+        startLook = {tonumber(ly or lookArg) or 0.0, tonumber(lp) or 0.0}
+    end
+    -- И откуда смотреть (--at=x,y,z в координатах лодки). Пара к --look: без
+    -- неё в кадр не попадает ничего, что стоит за мачтой, — а игрок всегда
+    -- начинает ровно перед ней.
+    local atArg = LaunchArg("at")
+    if atArg then
+        local ax, ay, az = atArg:match("^([^,]+),([^,]+),(.+)$")
+        if ax then startAt = {tonumber(ax) or 0.0, tonumber(ay) or 1.0, tonumber(az) or 0.0} end
+    end
+
     bindControls()
     SetMouseCaptured(true)
 
@@ -263,6 +282,11 @@ function OnStart(entity)
         log(("THEBOAT: загружено сохранение '%s' (%d блоков)"):format(slot, blocks))
     end
     saveSlot = slot
+
+    -- ПОСЛЕ загрузки сохранения: Restore возвращает и позу тоже, а --look/--at —
+    -- это явное указание снаружи, и оно должно быть последним словом.
+    if startAt then P.pos.x, P.pos.y, P.pos.z = startAt[1], startAt[2], startAt[3] end
+    if startLook then P.SetLook(startLook[1], startLook[2]) end
 
     started = true
     log("THEBOAT: READY")

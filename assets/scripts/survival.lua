@@ -170,6 +170,17 @@ function S.UpdateSky()
     L.Skybox.TopColor = Vec3(pal.sky[1] * 0.75, pal.sky[2] * 0.82, pal.sky[3])
     L.Skybox.HorizonColor = Vec3(pal.fog[1], pal.fog[2], pal.fog[3])
 
+    -- Солнце и луна НА небе, а не только в отсветах. Направление берётся у того
+    -- же солнца, что освещает мир, — поэтому светило всегда там, откуда падают
+    -- тени, и разъехаться они не могут. Луна ходит противоходом, звёзды
+    -- проступают сами, когда солнце уходит за горизонт.
+    L.Skybox.Celestials = true
+    L.Skybox.SunColor = Vec3(1.0, 0.93, 0.78)
+    L.Skybox.SunSize = 0.038
+    L.Skybox.Moon = true
+    L.Skybox.MoonSize = 0.028
+    L.Skybox.StarIntensity = 1.0
+
     L.Fog.Enabled = true
     L.Fog.Color = Vec3(pal.fog[1], pal.fog[2], pal.fog[3])
     -- Туман кончается там же, где кончается сетка воды: горизонт должен таять,
