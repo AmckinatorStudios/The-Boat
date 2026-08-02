@@ -52,6 +52,7 @@ local function bindControls()
     BindAction("Eat",          "F")
     BindAction("Drink",        "G")
     BindAction("Fish",         "R")
+    BindAction("Flashlight",   "L")   -- фонарь: L, рядом с остальными действиями
     for i = 1, 8 do BindAction("Craft " .. i, tostring(i)) end
     BindAction("Slot Next",    "TAB")
 end
@@ -64,6 +65,7 @@ local function blankInput()
         moveF = 0.0, moveR = 0.0, jump = false, sprint = false, crouch = false,
         lookX = 0.0, lookY = 0.0,
         breakHeld = false, placePressed = false, usePressed = false,
+        flashlightPressed = false,
         eatPressed = false, drinkPressed = false, fishPressed = false,
         craft = nil, cycleSlot = false,
     }
@@ -85,6 +87,7 @@ local function readInput()
     input.drinkPressed = WasActionPressed("Drink")
     input.fishPressed = WasActionPressed("Fish")
     input.cycleSlot = WasActionPressed("Slot Next")
+    input.flashlightPressed = WasActionPressed("Flashlight")
 
     if IsMouseCaptured() then
         local d = GetMouseDelta()
@@ -313,6 +316,13 @@ local function handleActions(dt, input)
         else
             HUD.Message("Нет пресной воды — нужен опреснитель", 2.4, "purifier")
         end
+    end
+
+    -- Фонарик (L). Ночью на палубе без него не видно, куда ставишь блок, а
+    -- ставить блоки — основное занятие; днём он просто не нужен и выключен.
+    if input.flashlightPressed then
+        local on = Player.ToggleFlashlight()
+        HUD.Message(on and "Фонарик включён" or "Фонарик выключен", 1.4, "lamp")
     end
 
     -- Рыбалка: удочка + стоять у борта. Ждать приходится — это и есть занятие.

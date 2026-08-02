@@ -93,7 +93,40 @@ function P.Init(deps)
     -- рыскание 0 — это взгляд в -Z, поэтому 180.)
     P.pos.x, P.pos.y, P.pos.z = 0.0, 1.0, 5.0
     P.yaw, P.pitch = 180.0, -3.0
+
+    -- Фонарик. Прожектор ДОЧЕРНИЙ камере, а не отдельная сущность, которую
+    -- пришлось бы каждый кадр доворачивать вслед за взглядом: иерархия уже
+    -- умеет это делать, и луч не отстаёт от камеры ни на кадр.
+    --
+    -- Выключен на старте: игра начинается днём, и включённый фонарь при солнце
+    -- выглядит поломкой, а не возможностью.
+    P.flashlight = FindObject("Flashlight")
+    if P.flashlight == nil then
+        P.flashlight = CreateObject("Flashlight")
+        P.flashlight:SetParent(cam)
+    end
+    if not P.flashlight:HasLight() then P.flashlight:AddLight() end
+    local L = P.flashlight:GetLight()
+    L.Kind = LightType.Spot
+    L.Color = Vec3(1.0, 0.94, 0.80)   -- тёплый, как лампа накаливания
+    L.Range = 26.0
+    L.InnerConeDeg = 13.0
+    L.OuterConeDeg = 26.0
+    L.Intensity = 0.0                 -- 0 = выключен
+    -- Чуть ниже и правее глаз: фонарь в руке, а не во лбу. Свет из точки взгляда
+    -- не даёт теней на том, во что смотришь, и сцена выглядит плоской.
+    P.flashlight.Transform.Position = Vec3(0.18, -0.16, 0.0)
+    P.flashlightOn = false
+
     P.Apply()
+end
+
+-- Фонарик: включить/выключить. Возвращает новое состояние.
+function P.ToggleFlashlight()
+    if P.flashlight == nil then return false end
+    P.flashlightOn = not P.flashlightOn
+    P.flashlight:GetLight().Intensity = P.flashlightOn and 2.4 or 0.0
+    return P.flashlightOn
 end
 
 function P.Apply()
