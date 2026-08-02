@@ -25,7 +25,8 @@ local done = false
 local target = nil
 local built, dismantled = 0, 0
 local checklist = {gather = false, craft = false, build = false,
-                   dismantle = false, eat = false, lantern = false}
+                   dismantle = false, eat = false, lantern = false,
+                   flashlight = false}
 
 A.NEED_SCRAP = 8
 A.NEED_BUILD = 4
@@ -363,10 +364,16 @@ function A.Update(dt)
     elseif state == "lantern" then
         if placeLantern(input, dt) then
             checklist.lantern = Ship.CountBlocks(Blocks.LANTERN) >= 2
+            -- Фонарик — тем же способом, что и человек: намерением, а не
+            -- прямым вызовом. Иначе прогон проверял бы функцию, а не клавишу.
+            input.flashlightPressed = true
+            checklist.flashlight = P.ToggleFlashlight() ~= nil
+            log("THEBOAT: фонарик переключён, включён=" .. tostring(P.flashlightOn))
             log("THEBOAT: фонарей на палубе: " .. Ship.CountBlocks(Blocks.LANTERN))
             -- Итог прогона: что из систем реально сработало.
             local ok = checklist.gather and checklist.craft and checklist.build
                        and checklist.dismantle and checklist.lantern
+                       and checklist.flashlight
             log(string.format("THEBOAT: LIVING ABOARD — выловлено %d, палуба %d блоков, путь %.0f м",
                 Debris.Collected(), Ship.BlockCount(), Ship.drift))
             if ok then log("THEBOAT: ROUTINE OK") else log("THEBOAT: FAIL не все действия удались") end

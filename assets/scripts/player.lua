@@ -102,7 +102,7 @@ function P.Init(deps)
     -- выглядит поломкой, а не возможностью.
     P.flashlight = FindObject("Flashlight")
     if P.flashlight == nil then
-        P.flashlight = CreateObject("Flashlight")
+        P.flashlight = SpawnObject("Flashlight")
         P.flashlight:SetParent(cam)
     end
     if not P.flashlight:HasLight() then P.flashlight:AddLight() end
