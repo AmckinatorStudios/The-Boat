@@ -206,6 +206,17 @@ function S.Restore(d)
     S.warm   = d.warm   or S.warm
     S.rested = d.rested or S.rested
     S.time   = d.time   or S.time
+    S.UpdateSky()
+end
+
+-- Новая игра: то же утро и те же шкалы, что у человека, впервые запустившего
+-- игру. Числа продублированы вверху файла намеренно — там они объявление
+-- начального состояния, здесь возврат к нему, и разъехаться им не дают
+-- ровно две строки расстояния.
+function S.Reset()
+    S.food, S.water, S.warm, S.rested = 82.0, 74.0, 100.0, 0.0
+    S.time = 0.36
+    S.UpdateSky()
 end
 
 return S

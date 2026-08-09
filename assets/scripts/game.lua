@@ -1,14 +1,15 @@
 -- ---------------------------------------------------------------------------
 -- game.lua — точка входа «The Boat». Висит на сущности World в main.sage.
 --
--- Обязанностей три: собрать игру из модулей и связать их хуками, объявить
--- раскладку и раз в кадр прокрутить цикл в понятном порядке. Порядок важен:
--- сперва вода (она задаёт высоту всему), затем корабль (он на ней качается),
--- затем игрок (он стоит на корабле), затем мусор и интерфейс.
+-- Обязанностей четыре: собрать игру из модулей и связать их хуками, объявить
+-- раскладку, держать состояние экранов (меню, верстак, игра) и раз в кадр
+-- прокрутить цикл в понятном порядке. Порядок важен: сперва вода (она задаёт
+-- высоту всему), затем корабль (он на ней качается), затем игрок (он стоит на
+-- корабле), затем мусор и интерфейс.
 --
 -- Ни строчки C++: бесконечный океан с волнами, корабль как сетка блоков,
--- плавучий мусор на настоящей физике движка, стройка, крафт, шкалы и смена
--- суток — всё это скрипты поверх обычного ECS.
+-- плавучий мусор на настоящей физике движка, стройка, крафт, шкалы, смена
+-- суток, меню и сохранения — всё это скрипты поверх обычного ECS.
 -- ---------------------------------------------------------------------------
 local Blocks = require "blocks"
 local Ocean  = require "ocean"
@@ -18,6 +19,8 @@ local Debris = require "debris"
 local S      = require "survival"
 local Inv    = require "inventory"
 local HUD    = require "hud"
+local Craft  = require "craft"
+local Menu   = require "menu"
 
 local autopilot = nil
 local started = false
@@ -28,15 +31,21 @@ local lanterns = {}     -- мировые координаты фонарей (�
 local nets = {}         -- мировые координаты сетей (притягивают мусор)
 local structureDirty = true
 local saveSlot = "main"
+local slotNamed = false  -- слот задан снаружи (--save=имя), а не выбран игрой
 local startLook = nil   -- {yaw, pitch} из --look, если задан
 local startAt = nil     -- {x, y, z} из --at, если задан
 local autoSaveTimer = 0.0
 local daysPassed = 0.0
 -- Версия формата прогресса. Растёт при ЛОМАЮЩЕМ изменении: добавление поля её
 -- не двигает, старые сохранения читаются без него как раньше.
-local SAVE_VERSION = 1
+--
+-- 2 — в прогрессе появились поза игрока и прожитые дни. Сохранения версии 1
+-- читаются по-прежнему: недостающие поля просто остаются начальными.
+local SAVE_VERSION = 2
 -- Автосохранение раз в полминуты. Не по событию «поставил блок»: в этой игре
 -- блоки ставят пачками, и запись на каждый означала бы сотни записей в минуту.
+-- Выход из игры сохраняет отдельно и сразу (см. OnQuit) — автосохранение
+-- страхует от выключения питания, а не заменяет сохранение при выходе.
 local AUTOSAVE_EVERY = 30.0
 
 -- --- Раскладка --------------------------------------------------------------
@@ -55,8 +64,12 @@ local function bindControls()
     BindAction("Drink",        "G")
     BindAction("Fish",         "R")
     BindAction("Flashlight",   "L")   -- фонарь: L, рядом с остальными действиями
-    for i = 1, 8 do BindAction("Craft " .. i, tostring(i)) end
-    BindAction("Slot Next",    "TAB")
+    -- Цифры выбирают СЛОТ, как в любой игре про блоки. Раньше они запускали
+    -- крафт, и «нажми 6, чтобы получить опреснитель» было единственным
+    -- интерфейсом крафта — теперь крафт живёт на верстаке (TAB).
+    for i = 1, #Blocks.hotbar do BindAction("Slot " .. i, tostring(i)) end
+    BindAction("Inventory",    {"TAB", "I"})
+    BindAction("Menu",         "ESCAPE")
 end
 
 -- --- Ввод -------------------------------------------------------------------
@@ -69,7 +82,7 @@ local function blankInput()
         breakHeld = false, placePressed = false, usePressed = false,
         flashlightPressed = false,
         eatPressed = false, drinkPressed = false, fishPressed = false,
-        craft = nil, cycleSlot = false,
+        craft = nil,
     }
 end
 
@@ -88,7 +101,6 @@ local function readInput()
     input.eatPressed = WasActionPressed("Eat")
     input.drinkPressed = WasActionPressed("Drink")
     input.fishPressed = WasActionPressed("Fish")
-    input.cycleSlot = WasActionPressed("Slot Next")
     input.flashlightPressed = WasActionPressed("Flashlight")
 
     if IsMouseCaptured() then
@@ -98,10 +110,19 @@ local function readInput()
     end
     local scroll = GetScrollDelta()
     if scroll ~= 0 then Inv.Cycle(scroll) end
-    for i = 1, #Inv.recipes do
-        if WasActionPressed("Craft " .. i) then input.craft = i end
+    for i = 1, #Blocks.hotbar do
+        if WasActionPressed("Slot " .. i) then Inv.Select(i) end
     end
     return input
+end
+
+-- --- Режим ввода ------------------------------------------------------------
+--
+-- Курсор — ОДИН на игру, и владелец у него один. Экранов, которым нужна мышь,
+-- два (верстак и меню), и если бы каждый захватывал и отпускал её сам, закрытие
+-- одного поверх другого возвращало бы обзор посреди открытого экрана.
+local function applyCursor()
+    SetMouseCaptured(not (Menu.IsOpen() or Craft.IsOpen()))
 end
 
 -- --- Хуки между модулями ----------------------------------------------------
@@ -180,10 +201,67 @@ end
 
 local purifierCount = 0
 
+-- --- Сохранение -------------------------------------------------------------
+--
+-- Прогресс, а не сцена: расстановка объектов уровня одинакова у всех игроков и
+-- живёт в .sage рядом с игрой, а вот построенная лодка, инвентарь, поза игрока
+-- и время суток принадлежат одному человеку. Пишется в пользовательский
+-- каталог, через временный файл с переименованием — падение посреди записи не
+-- должно уносить предыдущее сохранение.
+local function saveProgress()
+    if not started then return false end
+    return sage.save.Write(saveSlot or "main", {
+        ship      = Ship.Snapshot(),
+        inventory = Inv.Snapshot(),
+        survival  = S.Snapshot(),
+        player    = P.Snapshot(),
+        drift     = Ship.drift,
+        days      = math.floor(daysPassed),
+    }, SAVE_VERSION)
+end
+
+-- Имя оставлено глобальным: на него ссылались снаружи (проверки, консоль).
+function SaveProgress() return saveProgress() end
+
+local function loadProgress(slot)
+    local saved = sage.save.Read(slot)
+    if not saved then return nil end
+    local blocks = Ship.Restore(saved.ship)
+    Inv.Restore(saved.inventory)
+    S.Restore(saved.survival)
+    P.Restore(saved.player)
+    if saved.drift then Ship.drift = saved.drift end
+    daysPassed = saved.days or 0.0
+    structureDirty = true
+    log(("THEBOAT: загружено сохранение '%s' (%d блоков, день %d)"):format(
+        slot, blocks, math.floor(daysPassed) + 1))
+    return blocks
+end
+
+-- Новая игра: стартовый плот, пустой трюм, позднее утро.
+--
+-- Прежнее сохранение стирается ЗДЕСЬ, а не молча перезаписывается первым
+-- автосохранением: «Новая игра» и так означает, что прошлой партии больше нет,
+-- и оставлять её на диске ещё полминуты — значит обещать возврат, которого не
+-- будет.
+local function newGame()
+    sage.save.Delete(saveSlot)
+    local blocks = Ship.Reset()
+    Inv.Reset()
+    S.Reset()
+    P.Reset()
+    daysPassed = 0.0
+    autoSaveTimer = 0.0
+    fishTimer = 0.0
+    purifyTimer = 0.0
+    structureDirty = true
+    log(("THEBOAT: новая игра (%d блоков)"):format(blocks))
+end
+
 -- --- Старт ------------------------------------------------------------------
 function OnStart(entity)
     -- Считается ОДИН раз и в самом начале: от него зависят и запуск автопилота,
-    -- и то, грузить ли сохранение.
+    -- и то, показывать ли заглавное меню.
     local autopilotWanted = LaunchFlag("autopilot")
     local seed = tonumber(LaunchArg("seed") or "") or 20240517
     log("THEBOAT: старт, seed=" .. seed)
@@ -211,7 +289,10 @@ function OnStart(entity)
     end
 
     bindControls()
-    SetMouseCaptured(true)
+
+    -- Меню у игры своё (см. menu.lua), поэтому встроенное меню паузы плеера
+    -- выключаем: иначе ESC перехватывал бы плеер и до игры не доходил вовсе.
+    sage.game.SetPauseMenu(false)
 
     local tiles = Ocean.Build()
     local blocks = Ship.Init()
@@ -225,9 +306,6 @@ function OnStart(entity)
     -- проход, а волна у каждой плитки своя. Расхождение съедает та же рябь,
     -- которой отражение и ломается, — на глаз оно незаметно, а честное
     -- отражение по каждой волне стоило бы прохода геометрии на волну.
-    -- Через модули движка (sage.*), а не через глобальные имена: так видно, к
-    -- какой области относится вызов, и своя функция игры с тем же именем ничего
-    -- не затрёт. Старые глобальные имена движок по-прежнему понимает.
     sage.reflect.SetEnabled(true)
     sage.reflect.SetWater(Ocean.SEA_LEVEL)
     sage.reflect.SetPlanarScale(0.5)
@@ -245,7 +323,18 @@ function OnStart(entity)
     S.Init{ship = Ship}
 
     HUD.Build()
-    HUD.Message("Океан во все стороны. Лови, что несёт течением.", 7.0, "compass")
+    Craft.Build{inventory = Inv, onMessage = HUD.Message}
+    Menu.Build{
+        HasSave = function() return sage.save.Exists(saveSlot) end,
+        Subtitle = function()
+            -- День берём из САМОГО сохранения, а не из счётчика в памяти: в
+            -- заглавном меню партия ещё не загружена, и счётчик показал бы
+            -- «день 1» для любой сохранённой лодки.
+            local saved = sage.save.Read(saveSlot)
+            if not saved then return "Океан во все стороны. Земли нет." end
+            return ("Есть сохранение — день %d"):format(math.floor(saved.days or 0) + 1)
+        end,
+    }
     purifierCount = rescanStructures()
     structureDirty = false
 
@@ -260,67 +349,85 @@ function OnStart(entity)
                        survival = S, log = log}
     end
 
-    -- Загрузка прогресса. ПОСЛЕ того как мир построен: Restore заменяет
-    -- стартовый плот сохранённой лодкой, и делать это до Ship.Init было бы не
-    -- на чем.
-    -- Автопрогон играет с ЧИСТОГО листа и в свой слот.
+    -- Слот прогресса. Автопрогон играет с ЧИСТОГО листа и в свой слот.
     --
     -- Иначе проверка перестаёт быть проверкой: второй запуск продолжал бы
     -- партию первого, лодка была бы уже построена, и «автопилот прожил день»
     -- означало бы «автопилот доиграл чужую партию». Ровно на этом --check и
     -- сломался, как только появились сохранения.
-    local slot = LaunchArg("save") or (autopilotWanted and "autopilot" or "main")
-    local saved = not autopilotWanted and sage.save.Read(slot) or nil
-    if saved then
-        local blocks = Ship.Restore(saved.ship)
-        Inv.Restore(saved.inventory)
-        S.Restore(saved.survival)
-        if saved.drift then Ship.drift = saved.drift end
-        structureDirty = true
-        HUD.Message(("Продолжаем. Лодка: %d блоков, день %d."):format(
-            blocks, math.floor((saved.days or 0) + 1)), 6.0, "compass")
-        log(("THEBOAT: загружено сохранение '%s' (%d блоков)"):format(slot, blocks))
-    end
-    saveSlot = slot
+    saveSlot = LaunchArg("save") or (autopilotWanted and "autopilot" or "main")
+    slotNamed = LaunchArg("save") ~= nil
 
-    -- ПОСЛЕ загрузки сохранения: Restore возвращает и позу тоже, а --look/--at —
-    -- это явное указание снаружи, и оно должно быть последним словом.
+    started = true
+
+    -- Каким экраном открыться (--screen=craft|menu|game). Та же нужда, что у
+    -- --look и --time: снять кадр верстака или меню, не нажимая ничего руками,
+    -- и проверить, что экран собирается, — прогоном без человека.
+    local screenArg = LaunchArg("screen")
+
+    if autopilotWanted then
+        -- Автопрогон меню не открывает: он проверяет игру, а не экран запуска,
+        -- и ждать от него щелчка по «Новая игра» значило бы либо учить его
+        -- мыши, либо остановить CI на первом же кадре.
+        HUD.Message("Океан во все стороны. Лови, что несёт течением.", 7.0, "compass")
+    elseif screenArg == "craft" or screenArg == "game" then
+        -- «Сразу играть», минуя меню: прогресс при этом всё равно грузится —
+        -- пропуск экрана запуска не должен незаметно означать новую партию.
+        if loadProgress(saveSlot) then
+            HUD.Message(("Продолжаем. День %d."):format(math.floor(daysPassed) + 1), 5.0,
+                        "compass")
+        else
+            HUD.Message("Океан во все стороны. Лови, что несёт течением.", 7.0, "compass")
+        end
+        if screenArg == "craft" then Craft.SetOpen(true) end
+    else
+        -- Заглавное меню. Мир за ним уже построен и живёт: игра про воду не
+        -- должна начинаться с чёрного экрана со списком кнопок.
+        --
+        -- И смотрит камера ВДОЛЬ ПАЛУБЫ, а не туда, куда встанет игрок: с носа
+        -- вперёд видно только пустое море, и заглавный экран игры про лодку
+        -- получался без лодки. Поза сменится при первом же выборе в меню —
+        -- «Продолжить» вернёт сохранённую, «Новая игра» поставит на нос.
+        P.pos.x, P.pos.y, P.pos.z = 14.0, 2.2, 13.0
+        P.SetLook(56.0, -4.0)
+        P.Apply()
+        Menu.Open("title")
+        HUD.SetVisible(false)
+    end
+    applyCursor()
+
+    -- ПОСЛЕ всего: --look/--at — это явное указание снаружи, и оно должно быть
+    -- последним словом. Те же две строки стоят и после «Продолжить» в меню:
+    -- загрузка возвращает сохранённую позу, и без них ключи с командной строки
+    -- молча ничего не значили бы в самом частом случае — при продолжении игры.
     if startAt then P.pos.x, P.pos.y, P.pos.z = startAt[1], startAt[2], startAt[3] end
     if startLook then P.SetLook(startLook[1], startLook[2]) end
 
-    started = true
     log("THEBOAT: READY")
 end
 
--- --- Сохранение -------------------------------------------------------------
+-- --- Выход ------------------------------------------------------------------
 --
--- Прогресс, а не сцена: расстановка объектов уровня одинакова у всех игроков и
--- живёт в .sage рядом с игрой, а вот построенная лодка, инвентарь и время
--- суток принадлежат одному человеку. Пишется в пользовательский каталог, через
--- временный файл с переименованием — падение посреди записи не должно уносить
--- предыдущее сохранение.
-function SaveProgress()
-    if not started then return false end
-    return sage.save.Write(saveSlot or "main", {
-        ship      = Ship.Snapshot(),
-        inventory = Inv.Snapshot(),
-        survival  = S.Snapshot(),
-        drift     = Ship.drift,
-        days      = math.floor(daysPassed),
-    }, SAVE_VERSION)
+-- Движок зовёт этот хук на ЛЮБОМ пути выхода: кнопка меню, крестик окна, Stop в
+-- редакторе. До его появления игра теряла всё, что случилось после последнего
+-- автосохранения, и теряла молча — с точки зрения человека «игра не сохранила
+-- последние двадцать минут».
+function OnQuit()
+    if not started then return end
+    -- Автопрогон свой слот НЕ бережёт: следующий запуск обязан начинать с
+    -- чистого листа, иначе «автопилот прожил день» превращается в «автопилот
+    -- доиграл чужую партию». Но если слот назван снаружи (--save=имя), человек
+    -- просит записать именно туда — этим и проверяют сохранение прогоном.
+    if autopilot and not slotNamed then return end
+    if saveProgress() then log("THEBOAT: прогресс сохранён при выходе") end
 end
 
 -- --- Действия, не относящиеся к движению ------------------------------------
 local function handleActions(dt, input)
-    if input.cycleSlot then Inv.Cycle(1) end
-
-    if input.craft then
-        local recipe = Inv.recipes[input.craft]
-        if recipe then
-            local ok, text = Inv.Craft(recipe)
-            HUD.Message(text, 2.2, "check")
-        end
-    end
+    -- Намерение «скрафтить» осталось ради автопилота: он играет теми же
+    -- намерениями, что человек — мышью. Путь при этом ОДИН и тот же (Craft),
+    -- иначе прогон проверял бы не то, чем пользуются люди.
+    if input.craft then Craft.CraftIndex(input.craft) end
 
     if input.eatPressed then
         local id, value = Inv.EatBest()
@@ -352,7 +459,7 @@ local function handleActions(dt, input)
     -- Рыбалка: удочка + стоять у борта. Ждать приходится — это и есть занятие.
     if input.fishPressed then
         if not Inv.Has(Blocks.ROD) then
-            HUD.Message("Нужна удочка (крафт 7)", 2.4, "rod")
+            HUD.Message("Нужна удочка — собери её на верстаке (TAB)", 2.4, "rod")
         elseif fishTimer > 0.0 then
             HUD.Message(string.format("Клюёт... %.0f с", fishTimer), 1.5, "hook")
         else
@@ -380,35 +487,130 @@ local function handleActions(dt, input)
     end
 end
 
+-- --- Экраны -----------------------------------------------------------------
+local function startPlaying()
+    Menu.Close()
+    Craft.SetOpen(false)
+    HUD.SetVisible(true)
+    applyCursor()
+end
+
+-- Что нажали в меню. Возврат true означает «кадр на этом закончен»: мир под
+-- открытым меню не тикает, и продолжать цикл незачем.
+local function handleMenu(dt)
+    local action = Menu.Update(dt)
+    if action == nil then return end
+
+    if action == "continue" then
+        if Menu.State() == "title" then
+            if loadProgress(saveSlot) then
+                HUD.Message(("Продолжаем. День %d."):format(math.floor(daysPassed) + 1),
+                            5.0, "compass")
+            end
+            -- --look/--at сильнее сохранённой позы: это указание снаружи.
+            if startAt then P.pos.x, P.pos.y, P.pos.z = startAt[1], startAt[2], startAt[3] end
+            if startLook then P.SetLook(startLook[1], startLook[2]) end
+        end
+        startPlaying()
+
+    elseif action == "new" then
+        newGame()
+        startPlaying()
+        HUD.Message("Океан во все стороны. Лови, что несёт течением.", 7.0, "compass")
+
+    elseif action == "save" then
+        if saveProgress() then HUD.Message("Прогресс сохранён", 2.0, "save")
+        else HUD.Message("Не удалось сохранить — смотри лог", 3.0, "warn") end
+
+    elseif action == "quit" then
+        -- Сохраняет сам движок через OnQuit; здесь только просьба выйти.
+        sage.game.Quit()
+    end
+end
+
+-- ESC и TAB работают всегда, в любом экране: клавиша «назад» не должна
+-- зависеть от того, что открыто, — иначе из верстака в меню приходится
+-- выбираться в два приёма и угадывать, в каком ты сейчас.
+local function handleScreenKeys()
+    if WasActionPressed("Inventory") then
+        if Menu.IsOpen() then
+            -- Из меню верстак не открываем: сперва вернись в игру.
+        else
+            Craft.Toggle()
+            applyCursor()
+        end
+    end
+
+    if WasActionPressed("Menu") then
+        if Craft.IsOpen() then
+            Craft.SetOpen(false)
+        elseif Menu.State() == "pause" then
+            Menu.Close()
+            HUD.SetVisible(true)
+        elseif Menu.State() == "title" then
+            -- В заглавном меню ESC не значит ничего: выйти из него можно
+            -- только выбрав, что делать. «Отмена» здесь отменяла бы запуск.
+        else
+            Menu.Open("pause")
+            HUD.SetVisible(false)
+        end
+        applyCursor()
+    end
+end
+
 -- --- Кадр -------------------------------------------------------------------
 function OnUpdate(entity, dt)
     if not started then return end
     if dt > 0.1 then dt = 0.1 end
 
+    if autopilot == nil then handleScreenKeys() end
+
+    -- В МЕНЮ ПАУЗЫ мир стоит: ни волна, ни голод, ни течение. Пауза, в которой
+    -- продолжает капать жажда, — не пауза.
+    --
+    -- Останавливаем сами, а не через sage.game.Pause: пауза движка не тикает и
+    -- скрипты тоже, вместе с этим самым меню, и нажать в нём было бы нечего.
+    if Menu.State() == "pause" then
+        handleMenu(dt)
+        return
+    end
+
+    -- А в ЗАГЛАВНОМ меню мир живёт: волна качает лодку, мусор плывёт мимо. Это
+    -- не украшение — это то, ради чего игру запускают, и показать его лучше
+    -- сразу, чем после нажатия кнопки. Не идут только время суток, шкалы и сам
+    -- игрок: партия ещё не начата.
+    local inTitle = Menu.State() == "title"
+
     local input
-    if autopilot then input = autopilot.Update(dt) else input = readInput() end
+    if autopilot then input = autopilot.Update(dt)
+    elseif inTitle or Craft.IsOpen() then input = blankInput()
+    else input = readInput() end
 
     -- Порядок: вода -> корабль -> игрок -> мусор. Каждый следующий стоит на
     -- предыдущем, и перестановка мест ломает ровно то, что от неё зависит.
     Ship.waiting = P.overboard
     Ocean.Update(dt, Ship.pos.x, Ship.pos.z)
     Ship.Update(dt)
-    P.Update(dt, input)
-    Debris.Update(dt)
-    if #nets > 0 then Debris.NetPull(nets, dt) end
+    if not inTitle then
+        P.Update(dt, input)
+        Debris.Update(dt)
+        if #nets > 0 then Debris.NetPull(nets, dt) end
 
-    handleActions(dt, input)
-    S.Update(dt, P, input, lanterns)
+        handleActions(dt, input)
+        S.Update(dt, P, input, lanterns)
+        daysPassed = daysPassed + dt / S.DAY_LENGTH
 
-    daysPassed = daysPassed + dt / S.DAY_LENGTH
-
-    -- Автосохранение. По таймеру, а не по событию «поставил блок»: блоки в этой
-    -- игре ставят пачками, и запись на каждый означала бы сотни записей в
-    -- минуту вместо двух.
-    autoSaveTimer = autoSaveTimer + dt
-    if autoSaveTimer >= AUTOSAVE_EVERY then
-        autoSaveTimer = 0.0
-        SaveProgress()
+        -- Автосохранение. По таймеру, а не по событию «поставил блок»: блоки в
+        -- этой игре ставят пачками, и запись на каждый означала бы сотни
+        -- записей в минуту вместо двух.
+        autoSaveTimer = autoSaveTimer + dt
+        if autoSaveTimer >= AUTOSAVE_EVERY then
+            autoSaveTimer = 0.0
+            saveProgress()
+        end
+    else
+        Debris.Update(dt)
+        handleMenu(dt)
     end
 
     if structureDirty then
@@ -416,7 +618,10 @@ function OnUpdate(entity, dt)
         structureDirty = false
     end
 
-    HUD.Update(dt, S, P, Inv, Debris, Ship)
+    Craft.Update(dt)
+    HUD.Update(dt, S, P, Inv)
+
+    if inTitle then return end
 
     statusTimer = statusTimer - dt
     if statusTimer <= 0.0 then

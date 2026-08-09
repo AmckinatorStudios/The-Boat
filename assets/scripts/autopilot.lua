@@ -57,7 +57,7 @@ local function blankInput()
         lookX = 0.0, lookY = 0.0,
         breakHeld = false, placePressed = false, usePressed = false,
         eatPressed = false, drinkPressed = false, fishPressed = false,
-        craft = nil, cycleSlot = false,
+        craft = nil,
     }
 end
 

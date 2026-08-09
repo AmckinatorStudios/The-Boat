@@ -409,6 +409,45 @@ local function interact(dt, input)
     end
 end
 
+-- --- Поза: сохранение и сброс ----------------------------------------------
+--
+-- Где стоял и куда смотрел — часть прогресса, а не мелочь оформления. Без неё
+-- загрузка ставила игрока на нос лицом вперёд, кто бы и где бы ни вышел из
+-- игры: человек закрывал её сидя в каюте у фонаря, а возвращался на ветреный
+-- нос — и первым делом шёл обратно.
+function P.Snapshot()
+    return {x = P.pos.x, y = P.pos.y, z = P.pos.z,
+            yaw = P.yaw, pitch = P.pitch, overboard = P.overboard}
+end
+
+function P.Restore(d)
+    if type(d) ~= "table" then return end
+    if d.x and d.y and d.z then P.pos.x, P.pos.y, P.pos.z = d.x, d.y, d.z end
+    P.vel.x, P.vel.y, P.vel.z = 0, 0, 0
+    -- Координаты игрока — корабельные, ПОКА он на палубе, и мировые за бортом
+    -- (см. заголовок файла). Восстановить одну позицию и забыть про этот флаг
+    -- значит поставить пловца в те же числа, но в другой системе координат:
+    -- он оказался бы внутри корпуса или в километре от лодки.
+    P.overboard = d.overboard == true
+    if d.yaw then P.SetLook(d.yaw, d.pitch or P.pitch) end
+    P.Apply()
+end
+
+-- Новая игра: снова на носу, лицом в открытое море.
+function P.Reset()
+    P.pos.x, P.pos.y, P.pos.z = 0.0, 1.0, 5.0
+    P.vel.x, P.vel.y, P.vel.z = 0, 0, 0
+    P.yaw, P.pitch = 180.0, -3.0
+    P.overboard = false
+    P.onGround = false
+    P.breakProgress = 0.0
+    P.breakTarget = nil
+    P.target = nil
+    P.aimDebris = nil
+    if P.flashlight ~= nil and P.flashlight:Valid() and P.flashlightOn then P.ToggleFlashlight() end
+    P.Apply()
+end
+
 function P.Update(dt, input)
     P.yaw = (P.yaw - input.lookX) % 360.0
     P.pitch = math.max(-MAX_PITCH, math.min(MAX_PITCH, P.pitch + input.lookY))

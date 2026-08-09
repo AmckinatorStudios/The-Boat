@@ -15,22 +15,27 @@ local counts = {}
 Inv.hotbar = Blocks.hotbar
 Inv.selected = 1
 
+-- Рецепты — данные, а не код. Клавиш у них больше нет: крафт переехал на
+-- верстак (см. craft.lua), где видно, что из чего делается и чего не хватает.
+-- Восемь номеров, которые надо было помнить наизусть, были не интерфейсом, а
+-- его отсутствием: игра сообщала «нажми 6», а что такое 6 — не сообщала нигде,
+-- кроме таблицы в README.
 Inv.recipes = {
-    {id = "plank",    name = "Доска",       key = "Craft 1",
+    {id = "plank",    name = "Доска",
      cost = {{Blocks.SCRAP, 2}},                       give = {Blocks.PLANK, 1}},
-    {id = "rail",     name = "Леер",        key = "Craft 2",
+    {id = "rail",     name = "Леер",
      cost = {{Blocks.SCRAP, 1}, {Blocks.ROPE, 1}},     give = {Blocks.RAIL, 2}},
-    {id = "wall",     name = "Стена",       key = "Craft 3",
+    {id = "wall",     name = "Стена",
      cost = {{Blocks.SCRAP, 3}},                       give = {Blocks.WALL, 2}},
-    {id = "lantern",  name = "Фонарь",      key = "Craft 4",
+    {id = "lantern",  name = "Фонарь",
      cost = {{Blocks.SCRAP, 2}, {Blocks.PLASTIC, 2}},  give = {Blocks.LANTERN, 1}},
-    {id = "net",      name = "Сеть",        key = "Craft 5",
+    {id = "net",      name = "Сеть",
      cost = {{Blocks.ROPE, 3}, {Blocks.PLASTIC, 1}},   give = {Blocks.NET, 1}},
-    {id = "purifier", name = "Опреснитель", key = "Craft 6",
+    {id = "purifier", name = "Опреснитель",
      cost = {{Blocks.PLASTIC, 3}, {Blocks.SCRAP, 2}},  give = {Blocks.PURIFIER, 1}},
-    {id = "rod",      name = "Удочка",      key = "Craft 7",
+    {id = "rod",      name = "Удочка",
      cost = {{Blocks.SCRAP, 1}, {Blocks.ROPE, 2}},     give = {Blocks.ROD, 1}},
-    {id = "sail",     name = "Парус",       key = "Craft 8",
+    {id = "sail",     name = "Парус",
      cost = {{Blocks.CLOTH, 3}, {Blocks.ROPE, 1}},     give = {Blocks.SAIL, 1}},
 }
 
@@ -80,15 +85,22 @@ function Inv.CanCraft(recipe)
     return true
 end
 
-function Inv.Craft(recipe)
-    if not Inv.CanCraft(recipe) then
-        local missing = {}
-        for _, c in ipairs(recipe.cost) do
-            local lack = c[2] - Inv.Count(c[1])
-            if lack > 0 then missing[#missing + 1] = Blocks.Name(c[1]) .. " x" .. lack end
-        end
-        return false, "Не хватает: " .. table.concat(missing, ", ")
+-- Чего не хватает на рецепт — строкой. Нужна и верстаку (подсказка под
+-- рецептом), и сообщению в худе: считать её в двух местах значило бы однажды
+-- разойтись в том, что именно игра называет нехваткой.
+function Inv.Missing(recipe)
+    local missing = {}
+    for _, c in ipairs(recipe.cost) do
+        local lack = c[2] - Inv.Count(c[1])
+        if lack > 0 then missing[#missing + 1] = Blocks.Name(c[1]) .. " x" .. lack end
     end
+    if #missing == 0 then return nil end
+    return table.concat(missing, ", ")
+end
+
+function Inv.Craft(recipe)
+    local missing = Inv.Missing(recipe)
+    if missing then return false, "Не хватает: " .. missing end
     for _, c in ipairs(recipe.cost) do Inv.Remove(c[1], c[2]) end
     Inv.Add(recipe.give[1], recipe.give[2])
     return true, recipe.name .. " x" .. recipe.give[2]
@@ -121,6 +133,38 @@ function Inv.Summary()
         Inv.Count(Blocks.SCRAP), Inv.Count(Blocks.ROPE), Inv.Count(Blocks.PLASTIC),
         Inv.Count(Blocks.CLOTH), Inv.Count(Blocks.PLANK),
         Inv.Count(Blocks.FISH) + Inv.Count(Blocks.SEAWEED), Inv.Count(Blocks.WATER))
+end
+
+-- Что лежит в трюме — списком, в ОДНОМ И ТОМ ЖЕ порядке от кадра к кадру.
+--
+-- Порядок здесь важнее, чем кажется: трюм показан сеткой слотов, и если
+-- обходить counts через pairs, предметы будут прыгать между ячейками при
+-- каждом обновлении — таблица Lua порядка не обещает. Поэтому идём по
+-- объявленному порядку предметов.
+local ORDER = {
+    Blocks.SCRAP, Blocks.ROPE, Blocks.CLOTH, Blocks.PLASTIC,
+    Blocks.PLANK, Blocks.RAIL, Blocks.WALL, Blocks.LANTERN,
+    Blocks.NET, Blocks.PURIFIER, Blocks.SAIL, Blocks.ROD,
+    Blocks.FISH, Blocks.SEAWEED, Blocks.WATER,
+    Blocks.BEAM, Blocks.ROOF, Blocks.MAST, Blocks.BARREL, Blocks.CRATE,
+    Blocks.PLANTER,
+}
+
+function Inv.Items()
+    local out = {}
+    for _, id in ipairs(ORDER) do
+        local n = counts[id] or 0
+        if n > 0 then out[#out + 1] = {id, n} end
+    end
+    return out
+end
+
+-- Новая игра: трюм пуст, выбран первый слот. Отдельной функцией, а не
+-- «counts = {}» по месту: counts локальна, и без неё сброс пришлось бы делать
+-- перезагрузкой всей игры.
+function Inv.Reset()
+    counts = {}
+    Inv.selected = 1
 end
 
 -- Инвентарь целиком: что и сколько лежит, плюс выбранный слот.
