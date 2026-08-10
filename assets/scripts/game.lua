@@ -21,6 +21,7 @@ local Inv    = require "inventory"
 local HUD    = require "hud"
 local Craft  = require "craft"
 local Menu   = require "menu"
+local Icons  = require "blockicons"
 
 local autopilot = nil
 local started = false
@@ -295,6 +296,17 @@ function OnStart(entity)
         if ax then startAt = {tonumber(ax) or 0.0, tonumber(ay) or 1.0, tonumber(az) or 0.0} end
     end
 
+    -- «--give=1» кладёт в сумку по горсти всего. Нужно для снимков и показа:
+    -- инвентарь в игре начинается пустым, и проверить, как выглядят слоты с
+    -- предметами, иначе можно только доиграв до них.
+    if LaunchFlag("give") then
+        for _, id in ipairs({Blocks.PLANK, Blocks.BEAM, Blocks.RAIL, Blocks.LANTERN,
+                             Blocks.CRATE, Blocks.SCRAP, Blocks.ROPE, Blocks.CLOTH,
+                             Blocks.FISH, Blocks.WATER}) do
+            Inv.Add(id, 12)
+        end
+    end
+
     bindControls()
 
     -- Меню у игры своё (см. menu.lua), поэтому встроенное меню паузы плеера
@@ -328,6 +340,11 @@ function OnStart(entity)
     }
     Debris.Init{seed = seed}
     S.Init{ship = Ship}
+
+    -- Стенд объёмных иконок — ДО интерфейса: слоты спрашивают у него картинку
+    -- уже на первой перерисовке, и стенд, собранный после, дал бы кадр с
+    -- плоскими значками, который тут же сменился бы объёмными.
+    Icons.Build()
 
     HUD.Build()
     Craft.Build{inventory = Inv, onMessage = HUD.Message}

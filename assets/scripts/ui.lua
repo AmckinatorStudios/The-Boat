@@ -107,6 +107,36 @@ function U.Icon(parent, name, anchor, x, y, size, icon, color)
     return obj, e
 end
 
+-- Иконка предмета в слоте: объёмная картинка, если движок её уже снял, иначе
+-- плоский значок. Одно место на весь интерфейс — иначе верстак и худ разошлись
+-- бы в том, как показывают один и тот же предмет.
+--
+-- Пустой слот остаётся ПУСТЫМ: бледный значок в пустой ячейке врёт, будто
+-- предмет как бы есть.
+function U.SlotIcon(iconObj, id, blocks, icons)
+    if iconObj == nil or not iconObj:Valid() then return end
+    local e = iconObj:GetUI()
+    if id == nil then
+        e.Type = UIKind.Icon
+        e.Icon = ""
+        sage.ui.ClearImage(iconObj)
+        return
+    end
+    local path = icons and icons.Path(id) or nil
+    if path then
+        e.Type = UIKind.Image
+        e.Icon = ""
+        e.Color = Vec4(1, 1, 1, 1)
+        sage.ui.SetImage(iconObj, path)
+    else
+        e.Type = UIKind.Icon
+        sage.ui.ClearImage(iconObj)
+        e.Icon = blocks.Icon(id)
+        local c = blocks.Color(id)
+        e.IconColor = Vec4(c.x, c.y, c.z, 1.0)
+    end
+end
+
 function U.Bar(parent, name, anchor, x, y, w, h, color)
     local obj, e = base(parent, name, anchor, x, y, w, h)
     e.Type = UIKind.Bar

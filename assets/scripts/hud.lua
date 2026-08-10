@@ -19,6 +19,7 @@
 local Blocks = require "blocks"
 local Inv = require "inventory"
 local U = require "ui"
+local Icons = require "blockicons"
 
 local H = {}
 
@@ -35,6 +36,14 @@ local function ui(name)
     local obj = els[name]
     if obj == nil or not obj:Valid() then return nil end
     return obj:GetUI()
+end
+
+-- Сам объект, а не его элемент: смена вида иконки (объёмная картинка вместо
+-- плоского значка) трогает и компоненты, а не только поля элемента.
+local function obj(name)
+    local o = els[name]
+    if o == nil or not o:Valid() then return nil end
+    return o
 end
 
 -- Шкалы: сыт, напоён, согрет. Больше в игре про уют не нужно.
@@ -199,7 +208,6 @@ function H.Update(dt, S, P, Inv)
 
     for i = 1, Inv.HOTBAR do
         local slot = ui("Slot " .. i)
-        local icon = ui("Slot " .. i .. " Icon")
         local count = ui("Slot " .. i .. " Count")
         local id = Inv.SlotId(i)
         local have = Inv.SlotCount(i)
@@ -213,17 +221,7 @@ function H.Update(dt, S, P, Inv)
             slot.Color = selected and U.C(U.AMBER, 0.16) or U.C(U.INK, 0.55)
             slot.GradientColor = selected and U.C(U.INK, 0.66) or U.C(U.INK_DEEP, 0.62)
         end
-        if icon then
-            -- ПУСТАЯ ЯЧЕЙКА ПУСТА. Раньше здесь висел бледный значок предмета,
-            -- закреплённого за слотом, — но закреплять больше нечего: слот
-            -- держит то, что в него положили, а не то, что решил код. Бледный
-            -- значок в пустой ячейке вдобавок врал, будто предмет как бы есть.
-            icon.Icon = id and Blocks.Icon(id) or ""
-            if id then
-                local c = Blocks.Color(id)
-                icon.IconColor = Vec4(c.x, c.y, c.z, 1.0)
-            end
-        end
+        U.SlotIcon(obj("Slot " .. i .. " Icon"), id, Blocks, Icons)
         if count then count.Text = have > 1 and tostring(have) or "" end
     end
 

@@ -24,6 +24,7 @@
 -- ---------------------------------------------------------------------------
 local Blocks = require "blocks"
 local U = require "ui"
+local Icons = require "blockicons"
 
 local C = {}
 
@@ -128,7 +129,7 @@ function C.Build(deps)
     for i, recipe in ipairs(Inv.recipes) do
         local obj, icon, count = U.Slot(recipeBox, "Recipe " .. i, UIAnchor.TopLeft, 0, 0, SLOT,
                                         "craft:" .. recipe.id)
-        icon:GetUI().Icon = Blocks.Icon(recipe.give[1])
+        U.SlotIcon(icon, recipe.give[1], Blocks, Icons)
         count:GetUI().Text = "x" .. recipe.give[2]
         recipeSlots[i] = {obj = obj, icon = icon, count = count, recipe = recipe}
     end
@@ -246,17 +247,9 @@ local function describe(recipe)
 end
 
 local function paintSlot(view, id, count)
-    local icon, num = view.icon:GetUI(), view.count:GetUI()
-    if id then
-        local color = Blocks.Color(id)
-        icon.Icon = Blocks.Icon(id)
-        icon.IconColor = Vec4(color.x, color.y, color.z, 1.0)
-        num.Text = count > 1 and tostring(count) or ""
-    else
-        -- Пустая ячейка — пустая, а не «предмет с нулём».
-        icon.Icon = ""
-        num.Text = ""
-    end
+    local num = view.count:GetUI()
+    U.SlotIcon(view.icon, id, Blocks, Icons)
+    num.Text = (id and count > 1) and tostring(count) or ""
 end
 
 function C.Update(dt)
@@ -282,7 +275,14 @@ function C.Update(dt)
         local can = Inv.CanCraft(slot.recipe)
         local e = slot.obj:GetUI()
         local color = Blocks.Color(slot.recipe.give[1])
-        slot.icon:GetUI().IconColor = Vec4(color.x, color.y, color.z, can and 1.0 or 0.30)
+        local ie = slot.icon:GetUI()
+        -- Недоступный рецепт гасится: у объёмной иконки — прозрачностью
+        -- картинки, у плоского значка — цветом значка.
+        if ie.Type == UIKind.Image then
+            ie.Color = Vec4(1, 1, 1, can and 1.0 or 0.32)
+        else
+            ie.IconColor = Vec4(color.x, color.y, color.z, can and 1.0 or 0.30)
+        end
         slot.count:GetUI().TextColor = U.C(U.TEXT, can and 0.92 or 0.35)
         e.BorderColor = can and U.C(U.AMBER, 0.55) or Vec4(1, 1, 1, 0.08)
         e.Color = can and U.C(U.AMBER, 0.10) or U.C(U.INK, 0.55)
