@@ -54,6 +54,14 @@ void main() {
     float foam = smoothstep(uFoamSharp, 1.0, crest);
     albedo = mix(albedo, uFoamColor, foam * 0.4);
 
+    // ТЕНЬ НА ВОДЕ. Освещение движка тень уже учитывает — но у воды почти
+    // чёрное альбедо, и вклад прямого солнца в её цвет мал: корабль стоял в
+    // море без тени, будто висел над ним. Гасим и собственный цвет воды, и
+    // зеркало: настоящая тень на воде видна как раз тем, что в ней пропадает
+    // блик неба, а не тем, что вода «темнеет краской».
+    float sunShadow = uShadowsEnabled ? SunShadow(FragPos, N, normalize(-uSunDir)) : 0.0;
+    albedo *= mix(1.0, 0.66, sunShadow);
+
     if (uShadingMode == 1) { FragColor = vec4(albedo, vAlpha); return; }
 
     vec3 V = normalize(uViewPos - FragPos);
@@ -74,6 +82,7 @@ void main() {
     // На гребнях с пеной отражение гасим: пена рассеивает свет, и зеркало на
     // ней выглядит как плёнка масла.
     planarWeight *= 1.0 - foam * 0.7;
+    planarWeight *= 1.0 - sunShadow * 0.45;
 
     vec3 indirect = uLightmapEnabled ? texture(uLightmap, vec2(0.0)).rgb
                                      : DefaultIndirect(FragPos, N);

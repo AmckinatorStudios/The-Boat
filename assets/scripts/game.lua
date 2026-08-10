@@ -67,7 +67,7 @@ local function bindControls()
     -- Цифры выбирают СЛОТ, как в любой игре про блоки. Раньше они запускали
     -- крафт, и «нажми 6, чтобы получить опреснитель» было единственным
     -- интерфейсом крафта — теперь крафт живёт на верстаке (TAB).
-    for i = 1, #Blocks.hotbar do BindAction("Slot " .. i, tostring(i)) end
+    for i = 1, Inv.HOTBAR do BindAction("Slot " .. i, tostring(i)) end
     BindAction("Inventory",    {"TAB", "I"})
     BindAction("Menu",         "ESCAPE")
 end
@@ -110,7 +110,7 @@ local function readInput()
     end
     local scroll = GetScrollDelta()
     if scroll ~= 0 then Inv.Cycle(scroll) end
-    for i = 1, #Blocks.hotbar do
+    for i = 1, Inv.HOTBAR do
         if WasActionPressed("Slot " .. i) then Inv.Select(i) end
     end
     return input
@@ -123,6 +123,13 @@ end
 -- одного поверх другого возвращало бы обзор посреди открытого экрана.
 local function applyCursor()
     SetMouseCaptured(not (Menu.IsOpen() or Craft.IsOpen()))
+end
+
+-- Худ и рука прячутся вместе: и то и другое — «интерфейс игры», и поверх
+-- открытого меню они мешают одинаково.
+local function setHudVisible(visible)
+    HUD.SetVisible(visible)
+    P.SetHandVisible(visible)
 end
 
 -- --- Хуки между модулями ----------------------------------------------------
@@ -392,7 +399,7 @@ function OnStart(entity)
         P.SetLook(56.0, -4.0)
         P.Apply()
         Menu.Open("title")
-        HUD.SetVisible(false)
+        setHudVisible(false)
     end
     applyCursor()
 
@@ -491,7 +498,7 @@ end
 local function startPlaying()
     Menu.Close()
     Craft.SetOpen(false)
-    HUD.SetVisible(true)
+    setHudVisible(true)
     applyCursor()
 end
 
@@ -537,6 +544,7 @@ local function handleScreenKeys()
             -- Из меню верстак не открываем: сперва вернись в игру.
         else
             Craft.Toggle()
+            setHudVisible(not Craft.IsOpen())
             applyCursor()
         end
     end
@@ -544,15 +552,16 @@ local function handleScreenKeys()
     if WasActionPressed("Menu") then
         if Craft.IsOpen() then
             Craft.SetOpen(false)
+            setHudVisible(true)
         elseif Menu.State() == "pause" then
             Menu.Close()
-            HUD.SetVisible(true)
+            setHudVisible(true)
         elseif Menu.State() == "title" then
             -- В заглавном меню ESC не значит ничего: выйти из него можно
             -- только выбрав, что делать. «Отмена» здесь отменяла бы запуск.
         else
             Menu.Open("pause")
-            HUD.SetVisible(false)
+            setHudVisible(false)
         end
         applyCursor()
     end

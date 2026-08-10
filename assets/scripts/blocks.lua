@@ -125,10 +125,4 @@ function Blocks.Color(id)
     return Vec3(d.color[1], d.color[2], d.color[3])
 end
 
--- Что кладут в хотбар по умолчанию — в порядке слотов.
-Blocks.hotbar = {
-    Blocks.PLANK, Blocks.RAIL, Blocks.WALL,
-    Blocks.LANTERN, Blocks.NET, Blocks.PURIFIER,
-}
-
 return Blocks

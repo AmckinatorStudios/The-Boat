@@ -1,27 +1,26 @@
 -- ---------------------------------------------------------------------------
--- craft.lua — трюм и верстак: экран, на котором видно, что у тебя есть и что из
--- этого можно сделать.
+-- craft.lua — трюм, руки и верстак: экран, на котором видно, что у тебя есть,
+-- где оно лежит и что из этого можно сделать.
 --
 -- ЧТО БЫЛО ДО НЕГО. Крафт делался клавишами 1…8, и каждая означала рецепт,
 -- записанный только в README: «4 — фонарь: 2 обломка + 2 пластика». Игра про
 -- неспешную возню с мусором требовала помнить восемь номеров наизусть и
 -- сообщала о нехватке материалов лишь ПОСЛЕ нажатия — то есть единственным
--- способом узнать рецепт было попробовать. Ни увидеть, что лежит в трюме
--- (кроме трёх счётчиков в углу), ни понять, чего не хватает до фонаря, было
--- нельзя.
+-- способом узнать рецепт было попробовать.
 --
--- КАК СДЕЛАНО. Как в играх про блоки: экран открывается по TAB, мышь
--- освобождается, наверху — трюм ячейками, ниже — рецепты ячейками, под ними
--- строка про тот рецепт, на который сейчас смотришь: из чего он и чего для
--- него не хватает. Щелчок по рецепту делает предмет. Мир при этом продолжает
--- жить: волна качает лодку, мусор плывёт мимо — верстак не ставит игру на
--- паузу, потому что в игре, из которой нельзя проиграть, пауза ради крафта
--- ничего не защищает.
+-- КАК СДЕЛАНО. Как в играх про блоки: TAB освобождает мышь и показывает трюм
+-- ячейками, под ним — то, что в руках (тот самый хотбар), ниже — рецепты. Вещи
+-- ПЕРЕТАСКИВАЮТСЯ: нажал на ячейку — стопка «в курсоре», отпустил над другой —
+-- легла туда; одинаковые складываются, разные меняются местами. Порядок в
+-- инвентаре — решение игрока, и это единственный способ его принять.
+--
+-- Мир при этом продолжает жить: волна качает лодку, мусор плывёт мимо —
+-- верстак не ставит игру на паузу, потому что в игре, из которой нельзя
+-- проиграть, пауза ради крафта ничего не защищает.
 --
 -- Сетки раскладывает ДВИЖОК (sage.ui.SetLayout): скрипт задаёт «сетка по
 -- восемь в ряд с зазором шесть» и создаёт слоты, а куда каждый встанет,
--- считает раскладка. Раньше эта арифметика жила в скрипте и повторялась в
--- каждом месте, где есть ряд одинаковых ячеек.
+-- считает раскладка.
 -- ---------------------------------------------------------------------------
 local Blocks = require "blocks"
 local U = require "ui"
@@ -34,15 +33,28 @@ local GAP = 6
 local GRID_W = HOLD_COLS * SLOT + (HOLD_COLS - 1) * GAP
 
 local root, window
-local holdSlots = {}     -- {obj, icon, count}
+local slotViews = {}     -- номер ячейки инвентаря -> {obj, icon, count}
 local recipeSlots = {}   -- {obj, icon, count, recipe}
 local footer
+local ghost, ghostIcon, ghostCount   -- стопка «в курсоре»
 local open = false
+
+-- Что сейчас несут в курсоре и откуда взяли. dragFrom нужен, чтобы отличить
+-- ЩЕЛЧОК (взял и держу) от ПЕРЕТАСКИВАНИЯ (взял, довёл, отпустил): и то и
+-- другое начинается одинаково, а кончается по-разному.
+local held = nil
+local dragFrom = nil
 
 local Inv
 local onMessage = function() end
 
 -- --- Сборка -----------------------------------------------------------------
+local function makeSlot(parent, index, name)
+    local obj, icon, count = U.Slot(parent, name, UIAnchor.TopLeft, 0, 0, SLOT, "slot:" .. index)
+    slotViews[index] = {obj = obj, icon = icon, count = count}
+    return obj
+end
+
 function C.Build(deps)
     Inv = deps.inventory
     onMessage = deps.onMessage or onMessage
@@ -59,8 +71,13 @@ function C.Build(deps)
     dim.Color = Vec4(0.02, 0.03, 0.06, 0.62)
     dim.Rounding = 0.0
 
-    local cardH = 424
+    local holdTop = 74
+    local holdH = HOLD_ROWS * SLOT + (HOLD_ROWS - 1) * GAP
+    local handTop = holdTop + holdH + 32
+    local craftTop = handTop + SLOT + 34
+    local cardH = craftTop + SLOT + 56
     local cardW = GRID_W + 40
+
     window = U.Card(root, "Craft Window", UIAnchor.Center, 0, 0, cardW, cardH)
 
     local _, title = U.Label(window, "Craft Title", UIAnchor.TopLeft, 20, 16, 300, 24,
@@ -69,34 +86,43 @@ function C.Build(deps)
     title.IconColor = U.C(U.AMBER)
     title.PadX = 4.0
 
-    local _, hint = U.Label(window, "Craft Hint", UIAnchor.TopRight, 20, 20, 220, 20,
-                            "TAB — закрыть", 1.1)
+    local _, hint = U.Label(window, "Craft Hint", UIAnchor.TopRight, 20, 20, 260, 20,
+                            "перетаскивай мышью   ·   TAB — закрыть", 1.1)
     hint.TextColor = U.C(U.MUTED, 0.9)
 
     local _, holdCap = U.Label(window, "Hold Caption", UIAnchor.TopLeft, 20, 50, 300, 18,
-                               "Что в трюме", 1.15)
+                               "Трюм", 1.15)
     holdCap.TextColor = U.C(U.MUTED)
 
     -- Трюм: сетка ячеек фиксированного размера. Ячейки пустуют, а не исчезают:
-    -- предмет, которого стало ноль, не должен утаскивать за собой соседей на
-    -- новые места — иначе каждый подобранный обломок перетасовывает весь трюм.
-    local holdBox = U.Panel(window, "Hold Grid", UIAnchor.TopLeft, 20, 74,
-                            GRID_W, HOLD_ROWS * SLOT + (HOLD_ROWS - 1) * GAP)
+    -- место в инвентаре закреплено за тем, что игрок туда положил.
+    local holdBox = U.Panel(window, "Hold Grid", UIAnchor.TopLeft, 20, holdTop, GRID_W, holdH)
     sage.ui.SetLayout(holdBox, {dir = "grid", columns = HOLD_COLS, spacing = GAP,
                                 padding = 0.0, stretch = false})
-    for i = 1, HOLD_COLS * HOLD_ROWS do
-        local obj, icon, count = U.Slot(holdBox, "Hold " .. i, UIAnchor.TopLeft, 0, 0, SLOT,
-                                        "hold:" .. i)
-        holdSlots[i] = {obj = obj, icon = icon, count = count}
+    for k = 1, Inv.HOLD do
+        makeSlot(holdBox, Inv.HOTBAR + k, "Hold " .. k)
     end
 
-    local recipesTop = 74 + HOLD_ROWS * SLOT + (HOLD_ROWS - 1) * GAP + 22
-    local _, craftCap = U.Label(window, "Craft Caption", UIAnchor.TopLeft, 20, recipesTop - 22,
+    -- Хотбар — ТЕ ЖЕ САМЫЕ ячейки, что и внизу экрана в игре, и перетаскивать
+    -- между ним и трюмом можно ровно потому, что разницы между ними нет.
+    local _, handCap = U.Label(window, "Hand Caption", UIAnchor.TopLeft, 20, handTop - 24,
+                               300, 18, "В руках", 1.15)
+    handCap.TextColor = U.C(U.MUTED)
+
+    local handW = Inv.HOTBAR * SLOT + (Inv.HOTBAR - 1) * GAP
+    local handBox = U.Panel(window, "Hand Grid", UIAnchor.TopLeft,
+                            20 + (GRID_W - handW) * 0.5, handTop, handW, SLOT)
+    sage.ui.SetLayout(handBox, {dir = "grid", columns = Inv.HOTBAR, spacing = GAP,
+                                padding = 0.0, stretch = false})
+    for i = 1, Inv.HOTBAR do
+        makeSlot(handBox, i, "Hand Slot " .. i)
+    end
+
+    local _, craftCap = U.Label(window, "Craft Caption", UIAnchor.TopLeft, 20, craftTop - 24,
                                 300, 18, "Что можно собрать", 1.15)
     craftCap.TextColor = U.C(U.MUTED)
 
-    local recipeBox = U.Panel(window, "Recipe Grid", UIAnchor.TopLeft, 20, recipesTop,
-                              GRID_W, SLOT)
+    local recipeBox = U.Panel(window, "Recipe Grid", UIAnchor.TopLeft, 20, craftTop, GRID_W, SLOT)
     sage.ui.SetLayout(recipeBox, {dir = "grid", columns = HOLD_COLS, spacing = GAP,
                                   padding = 0.0, stretch = false})
     for i, recipe in ipairs(Inv.recipes) do
@@ -114,6 +140,17 @@ function C.Build(deps)
                                        GRID_W, 22, "", 1.25)
     footerE.PadX = 4.0
     footer = footerObj
+
+    -- Стопка «в курсоре». Живёт на КОРНЕ экрана, а не в окне: её место —
+    -- под мышью, а мышь ходит по всему кадру. И она не ловит мышь сама
+    -- (Interactive не ставим) — иначе перетаскиваемая вещь закрывала бы собой
+    -- ту ячейку, в которую её несут.
+    ghost, ghostIcon, ghostCount = U.Slot(root, "Drag Ghost", UIAnchor.TopLeft, 0, 0, SLOT)
+    local g = ghost:GetUI()
+    g.Color = U.C(U.AMBER, 0.18)
+    g.BorderColor = U.C(U.AMBER, 0.85)
+    g.ShadowSize = 16.0
+    g.Visible = false
 end
 
 -- --- Открыть/закрыть --------------------------------------------------------
@@ -127,6 +164,12 @@ function C.IsOpen() return open end
 function C.SetOpen(value)
     open = value
     if root ~= nil and root:Valid() then root:GetUI().Visible = open end
+    if not open and held then
+        -- Закрыли экран, не выпустив вещь из курсора. Возвращаем её в трюм:
+        -- место всегда есть — стопка только что была в одной из ячеек.
+        Inv.Add(held.id, held.n)
+        held, dragFrom = nil, nil
+    end
 end
 
 function C.Toggle() C.SetOpen(not open) end
@@ -151,6 +194,45 @@ function C.CraftById(id)
     return C.CraftRecipe(Inv.FindRecipe(id))
 end
 
+-- --- Перетаскивание ----------------------------------------------------------
+local function takeFrom(index)
+    local s = Inv.Slot(index)
+    if not s then return nil end
+    local stack = {id = s.id, n = s.n}
+    Inv.SetSlot(index, nil)
+    return stack
+end
+
+-- Положить то, что в курсоре, в ячейку: пустая — просто ложится, такая же —
+-- складывается, чужая — меняются местами.
+local function putInto(index)
+    if held == nil then return end
+    local there = Inv.Slot(index)
+    if there == nil then
+        Inv.SetSlot(index, held)
+        held = nil
+        return
+    end
+    if there.id == held.id then
+        local room = Inv.STACK - there.n
+        local put = math.min(room, held.n)
+        if put > 0 then
+            Inv.SetSlot(index, {id = there.id, n = there.n + put})
+            held.n = held.n - put
+            if held.n <= 0 then held = nil end
+        end
+        return
+    end
+    -- Обмен: чужая стопка уезжает в курсор, наша — в ячейку.
+    Inv.SetSlot(index, held)
+    held = {id = there.id, n = there.n}
+end
+
+local function slotIndexOf(action)
+    if action:sub(1, 5) ~= "slot:" then return nil end
+    return tonumber(action:sub(6))
+end
+
 -- --- Кадр -------------------------------------------------------------------
 local function describe(recipe)
     local parts = {}
@@ -163,24 +245,34 @@ local function describe(recipe)
     return recipe.name .. " ×" .. recipe.give[2] .. "   из:  " .. table.concat(parts, " + ")
 end
 
+local function paintSlot(view, id, count)
+    local icon, num = view.icon:GetUI(), view.count:GetUI()
+    if id then
+        local color = Blocks.Color(id)
+        icon.Icon = Blocks.Icon(id)
+        icon.IconColor = Vec4(color.x, color.y, color.z, 1.0)
+        num.Text = count > 1 and tostring(count) or ""
+    else
+        -- Пустая ячейка — пустая, а не «предмет с нулём».
+        icon.Icon = ""
+        num.Text = ""
+    end
+end
+
 function C.Update(dt)
     if not open then return end
 
-    -- Трюм: сколько чего лежит.
-    local items = Inv.Items()
-    for i, slot in ipairs(holdSlots) do
-        local entry = items[i]
-        local icon, count = slot.icon:GetUI(), slot.count:GetUI()
-        if entry then
-            local color = Blocks.Color(entry[1])
-            icon.Icon = Blocks.Icon(entry[1])
-            icon.IconColor = Vec4(color.x, color.y, color.z, 1.0)
-            count.Text = tostring(entry[2])
+    for index, view in pairs(slotViews) do
+        paintSlot(view, Inv.SlotId(index), Inv.SlotCount(index))
+        -- Ячейка «в руках» помечена тёплой рамкой и на верстаке: игрок должен
+        -- видеть, куда именно ляжет вещь, которую он кладёт в хотбар.
+        local e = view.obj:GetUI()
+        if index == Inv.selected then
+            e.BorderColor = U.C(U.AMBER, 0.9)
+            e.BorderThickness = 2.0
         else
-            -- Пустая ячейка — пустая, а не «предмет с нулём»: ноль в углу
-            -- ячейки читается как «есть, но кончился», чего в трюме не бывает.
-            icon.Icon = ""
-            count.Text = ""
+            e.BorderColor = Vec4(1, 1, 1, 0.10)
+            e.BorderThickness = 1.5
         end
     end
 
@@ -196,9 +288,48 @@ function C.Update(dt)
         e.Color = can and U.C(U.AMBER, 0.10) or U.C(U.INK, 0.55)
     end
 
+    -- --- Мышь ---------------------------------------------------------------
+    --
+    -- Нажатие и отпускание РАЗДЕЛЕНЫ (sage.ui.PressedAction / ReleasedAction), и
+    -- это ровно то, что делает перетаскивание возможным: щелчок — нажал и
+    -- отпустил на одной ячейке, перенос — на разных, а по одному «щёлкнули»
+    -- их не различить.
+    local pressed = sage.ui.PressedAction()
+    local pressedSlot = slotIndexOf(pressed)
+    if pressedSlot then
+        if held == nil then
+            held = takeFrom(pressedSlot)
+            dragFrom = held and pressedSlot or nil
+        else
+            putInto(pressedSlot)
+            dragFrom = nil
+        end
+    end
+
+    local releasedSlot = slotIndexOf(sage.ui.ReleasedAction())
+    if releasedSlot and held ~= nil and dragFrom ~= nil then
+        -- Отпустили над ДРУГОЙ ячейкой — это перенос. Над той же самой —
+        -- обычный щелчок: вещь остаётся в курсоре, и её кладут вторым щелчком.
+        if releasedSlot ~= dragFrom then putInto(releasedSlot) end
+        dragFrom = nil
+    end
+
+    -- Стопка в курсоре едет за мышью. Точку берём у движка: у окна свои
+    -- координаты, у кадра свои, у холста свой масштаб — сложить их в скрипте
+    -- значило бы повторить перевод, который уже сделан один раз.
+    local g = ghost:GetUI()
+    if held then
+        local c = sage.ui.Cursor()
+        g.Visible = c.x >= 0.0
+        g.Offset = Vec2(c.x - SLOT * 0.5, c.y - SLOT * 0.5)
+        paintSlot({icon = ghostIcon, count = ghostCount}, held.id, held.n)
+    else
+        g.Visible = false
+    end
+
     -- Что под курсором. Наведение читаем у движка по ИМЕНИ действия: спрашивать
-    -- у каждой из тридцати с лишним ячеек «ты под курсором?» — тридцать
-    -- вопросов ради одного ответа.
+    -- у каждой из сорока ячеек «ты под курсором?» — сорок вопросов ради одного
+    -- ответа.
     local hovered = sage.ui.HoveredAction()
     local text, color = nil, U.C(U.MUTED, 0.95)
     if hovered:sub(1, 6) == "craft:" then
@@ -213,19 +344,20 @@ function C.Update(dt)
                 color = U.C(U.GOOD, 0.95)
             end
         end
-    elseif hovered:sub(1, 5) == "hold:" then
-        local entry = items[tonumber(hovered:sub(6)) or 0]
-        if entry then text = Blocks.Name(entry[1]) .. " — " .. entry[2] .. " шт." end
+    else
+        local index = slotIndexOf(hovered)
+        local id = index and Inv.SlotId(index)
+        if id then text = Blocks.Name(id) .. " — " .. Inv.SlotCount(index) .. " шт." end
     end
     if text == nil then
-        text = "Наведи на ячейку, щёлкни по рецепту — соберётся один предмет"
+        text = held and "Отпусти над ячейкой — вещь ляжет туда"
+               or "Тащи вещи мышью, щёлкни по рецепту — соберётся один предмет"
     end
     local f = footer:GetUI()
     f.Text = text
     f.TextColor = color
 
-    -- Щелчок. Только по рецепту: трюм тут показывают, а не перекладывают —
-    -- раскладывать доски по ячейкам в игре про уют незачем.
+    -- Щелчок по рецепту. Только по нему: ячейки заняты перетаскиванием.
     local clicked = sage.ui.ClickedAction()
     if clicked:sub(1, 6) == "craft:" then
         C.CraftById(clicked:sub(7))

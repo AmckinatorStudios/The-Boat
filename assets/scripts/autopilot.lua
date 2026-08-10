@@ -183,10 +183,10 @@ local function build(input, dt)
     local cell = nextBuildCell()
     if cell == nil then return true end
 
-    -- Слот с доской.
-    for i, id in ipairs(Inv.hotbar) do
-        if id == Blocks.PLANK then Inv.Select(i) end
-    end
+    -- Взять доску в руку. Ячейки инвентаря больше не закреплены за видами
+    -- блоков — доска лежит там, куда её положил Add, — поэтому спрашиваем
+    -- инвентарь, а не перебираем список видов.
+    Inv.SelectItem(Blocks.PLANK)
 
     -- Крадучись у самого борта: полным шагом бот проскакивает край носа по
     -- инерции и оказывается в воде — вместо стройки начинается заплыв.
@@ -250,9 +250,7 @@ local function placeLantern(input, dt)
         end
         return true -- нет материалов: не повод считать прогон сломанным
     end
-    for i, id in ipairs(Inv.hotbar) do
-        if id == Blocks.LANTERN then Inv.Select(i) end
-    end
+    Inv.SelectItem(Blocks.LANTERN)
 
     local cell = nil
     for z = -1, 3 do

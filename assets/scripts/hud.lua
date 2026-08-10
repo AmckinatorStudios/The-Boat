@@ -17,6 +17,7 @@
 -- говорит значками.
 -- ---------------------------------------------------------------------------
 local Blocks = require "blocks"
+local Inv = require "inventory"
 local U = require "ui"
 
 local H = {}
@@ -26,6 +27,7 @@ local els = {}
 local messageTimer = 0.0
 local pickTimer = 0.0      -- сколько ещё показывать имя выбранного предмета
 local lastSelected = 0
+local lastSelectedId = nil
 
 local function keep(name, obj) els[name] = obj end
 
@@ -82,8 +84,8 @@ function H.Build()
     -- --- Панель предметов: квадратные слоты со значком и счётчиком.
     -- Номеров на слотах нет: цифра на каждом — шесть подписей ради того, что
     -- запоминается с первого нажатия.
-    local total = #Blocks.hotbar * SLOT + (#Blocks.hotbar - 1) * SLOT_GAP
-    for i = 1, #Blocks.hotbar do
+    local total = Inv.HOTBAR * SLOT + (Inv.HOTBAR - 1) * SLOT_GAP
+    for i = 1, Inv.HOTBAR do
         local x = -total * 0.5 + (i - 1) * (SLOT + SLOT_GAP) + SLOT * 0.5
         local slotObj, iconObj, countObj =
             U.Slot(root, "Slot " .. i, UIAnchor.BottomCenter, x, 18, SLOT)
@@ -195,12 +197,12 @@ function H.Update(dt, S, P, Inv)
         if icon then icon.IconColor = U.C(v[3], 0.45 + 0.55 * math.min(1.0, value * 1.6)) end
     end
 
-    for i = 1, #Blocks.hotbar do
+    for i = 1, Inv.HOTBAR do
         local slot = ui("Slot " .. i)
         local icon = ui("Slot " .. i .. " Icon")
         local count = ui("Slot " .. i .. " Count")
-        local id = Blocks.hotbar[i]
-        local have = Inv.Count(id)
+        local id = Inv.SlotId(i)
+        local have = Inv.SlotCount(i)
         local selected = (i == Inv.selected)
         if slot then
             -- Выбранный слот приподнят и обведён тёплым: рамка одна не читается
@@ -212,21 +214,27 @@ function H.Update(dt, S, P, Inv)
             slot.GradientColor = selected and U.C(U.INK, 0.66) or U.C(U.INK_DEEP, 0.62)
         end
         if icon then
-            -- Пустой слот показан бледным значком, а не пустотой: место в
-            -- панели закреплено за предметом, даже когда его нет.
-            icon.Icon = Blocks.Icon(id)
-            local c = Blocks.Color(id)
-            icon.IconColor = Vec4(c.x, c.y, c.z, have > 0 and 1.0 or 0.28)
+            -- ПУСТАЯ ЯЧЕЙКА ПУСТА. Раньше здесь висел бледный значок предмета,
+            -- закреплённого за слотом, — но закреплять больше нечего: слот
+            -- держит то, что в него положили, а не то, что решил код. Бледный
+            -- значок в пустой ячейке вдобавок врал, будто предмет как бы есть.
+            icon.Icon = id and Blocks.Icon(id) or ""
+            if id then
+                local c = Blocks.Color(id)
+                icon.IconColor = Vec4(c.x, c.y, c.z, 1.0)
+            end
         end
-        if count then count.Text = have > 0 and tostring(have) or "" end
+        if count then count.Text = have > 1 and tostring(have) or "" end
     end
 
     -- Имя выбранного предмета всплывает на секунду после переключения.
-    if Inv.selected ~= lastSelected then
+    local selectedId = Inv.SelectedBlock()
+    if Inv.selected ~= lastSelected or selectedId ~= lastSelectedId then
         lastSelected = Inv.selected
-        pickTimer = 1.6
+        lastSelectedId = selectedId
+        pickTimer = selectedId and 1.6 or 0.0
         local p = ui("Pick")
-        if p then p.Text = Blocks.Name(Inv.SelectedBlock()) end
+        if p then p.Text = selectedId and Blocks.Name(selectedId) or "" end
     end
     local pick = ui("Pick")
     if pick then

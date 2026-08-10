@@ -19,6 +19,7 @@
 local Blocks = require "blocks"
 local Ocean = require "ocean"
 local Ship = require "ship"
+local Hand = require "hand"
 
 local P = {}
 
@@ -117,6 +118,10 @@ function P.Init(deps)
     -- не даёт теней на том, во что смотришь, и сцена выглядит плоской.
     P.flashlight.Transform.Position = Vec3(0.18, -0.16, 0.0)
     P.flashlightOn = false
+
+    -- Рука в кадре. Дочерняя камере, как и фонарик, и по той же причине: за
+    -- взглядом её доворачивает иерархия, а не скрипт (см. hand.lua).
+    Hand.Build(cam)
 
     P.Apply()
 end
@@ -370,6 +375,7 @@ local function interact(dt, input)
     if input.usePressed and P.aimDebris and hooks.CollectDebris then
         hooks.CollectDebris(P.aimDebris)
         P.aimDebris = nil
+        Hand.Swing(false)   -- багром машут один раз, а не непрерывно
         return
     end
 
@@ -381,6 +387,7 @@ local function interact(dt, input)
         P.breakTarget = {x = hit.x, y = hit.y, z = hit.z}
         local hardness = Blocks.Hardness(hit.id)
         if hardness then
+            Hand.Swing(true)   -- пока ломаем — рука качается
             P.breakProgress = P.breakProgress + dt
             if P.breakProgress >= hardness then
                 P.breakProgress = 0.0
@@ -391,18 +398,24 @@ local function interact(dt, input)
     else
         P.breakProgress = 0.0
         P.breakTarget = nil
+        Hand.StopSwing()
     end
 
     if input.placePressed and not P.overboard then
-        local id = Inv.SelectedBlock()
+        -- Ставится то, что В РУКЕ, и тратится ИМЕННО ОНО: раньше блок
+        -- списывался «из общего запаса» (Inv.Remove по виду), и стопка в руке
+        -- могла остаться нетронутой, пока таяла другая в трюме.
+        local slot = Inv.selected
+        local id = Inv.SlotId(slot)
         local bx, by, bz = placementCell(hit, P.pos.x, P.pos.y + EYE, P.pos.z, ldx, ldy, ldz)
-        if bx and id and Inv.Count(id) > 0 and Blocks.IsPlaceable(id) then
+        if bx and id and Blocks.IsPlaceable(id) then
             local p = P.pos
             local intersects = not (bx + 1 <= p.x - HALF_W or bx >= p.x + HALF_W or
                                     bz + 1 <= p.z - HALF_W or bz >= p.z + HALF_W or
                                     by + 1 <= p.y or by >= p.y + HEIGHT)
             if not intersects and Ship.PlaceBlock(bx, by, bz, id) then
-                Inv.Remove(id, 1)
+                Inv.RemoveFromSlot(slot, 1)
+                Hand.Swing(false)
                 if hooks.OnPlace then hooks.OnPlace(bx, by, bz, id) end
             end
         end
@@ -454,8 +467,13 @@ function P.Update(dt, input)
 
     if P.overboard then swim(dt, input) else moveOnDeck(dt, input) end
     interact(dt, input)
+    Hand.Update(dt, P, Inv)
     P.Apply()
 end
+
+-- Руку прячут вместе с худом: поверх открытого меню или верстака она мешает
+-- ровно так же, как прицел.
+function P.SetHandVisible(visible) Hand.SetVisible(visible) end
 
 P.EYE_HEIGHT = EYE
 P.REACH = REACH
