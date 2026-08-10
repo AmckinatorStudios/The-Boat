@@ -74,10 +74,6 @@ function P.WorldPos()
     return Ship.LocalToWorld(P.pos.x, P.pos.y, P.pos.z)
 end
 
-local function deckBlocked(x, y, z)
-    return Ship.BoxBlocked(x - HALF_W, y, z - HALF_W, x + HALF_W, y + HEIGHT, z + HALF_W)
-end
-
 function P.Init(deps)
     Inv = deps.inventory
     hooks = deps.hooks or {}
@@ -118,6 +114,17 @@ function P.Init(deps)
     -- не даёт теней на том, во что смотришь, и сцена выглядит плоской.
     P.flashlight.Transform.Position = Vec3(0.18, -0.16, 0.0)
     P.flashlightOn = false
+
+    -- Контроллер персонажа движка со СВОИМ миром: твердь — воксельная палуба
+    -- корабля (см. moveOnDeck). Высота шага 0.6 — как в майнкрафте: на леер и
+    -- полублок всходят шагом, на целый блок надо прыгать. Больше нельзя: с
+    -- шагом в блок игрок «зашагивает» на стену любой высоты.
+    sage.physics.SetCharacterShape(body, {
+        radius = HALF_W, height = HEIGHT, step = 0.6, mass = 70.0,
+    })
+    sage.physics.SetCharacterWorld(body, function(x0, y0, z0, x1, y1, z1)
+        return Ship.BoxBlocked(x0, y0, z0, x1, y1, z1)
+    end)
 
     -- Рука в кадре. Дочерняя камере, как и фонарик, и по той же причине: за
     -- взглядом её доворачивает иерархия, а не скрипт (см. hand.lua).
@@ -191,18 +198,25 @@ P.ClimbAboard = climbAboard
 -- Застрявший навсегда игрок — худшее, что может случиться в игре, из которой
 -- нельзя проиграть, поэтому выход есть всегда: сперва вверх, а если и там
 -- сплошняк — на нос, на свободное место.
-local function unstick(p)
-    if not deckBlocked(p.x, p.y, p.z) then return end
-    for _ = 1, 12 do
-        p.y = p.y + 0.25
-        if not deckBlocked(p.x, p.y, p.z) then return end
-    end
-    p.x, p.y, p.z = 0.0, 1.0, 5.0
-end
-
+-- Ходьба по палубе идёт КОНТРОЛЛЕРОМ ПЕРСОНАЖА ДВИЖКА (sage.physics), а не
+-- своими руками.
+--
+-- Мир корабля в физике не лежит и лежать не должен: палуба — воксельная сетка,
+-- собранная этим же скриптом, и она качается вместе с корпусом, то есть живёт
+-- в корабельных координатах. Заводить на каждый кубик кинематическое тело
+-- значило бы держать тысячу тел и двигать их все каждый кадр.
+--
+-- Поэтому контроллеру отдан НАШ мир: движок спрашивает «занят ли этот объём»,
+-- отвечает Ship.BoxBlocked, а всю ходьбу — упор в стену, скольжение вдоль
+-- борта, ступеньку, опору, выталкивание из тверди — ведёт движок. Здесь
+-- остаются только правила игры: разгон, бег, приседание, прыжок и тяготение.
+--
+-- Раньше всё это было написано здесь, и здесь же жил баг: «ступенька»
+-- поднимала игрока на блок и оставляла наверху, ничего не проверив, — держа W
+-- у отвесной стены, он взбирался на любую высоту. У движка подъём ограничен
+-- высотой шага, свободой над головой и обязательной посадкой на опору.
 local function moveOnDeck(dt, input)
     local p, v = P.pos, P.vel
-    unstick(p)
 
     local fx, _, fz = P.ForwardFlat()
     local rx, _, rz = P.RightFlat()
@@ -220,49 +234,20 @@ local function moveOnDeck(dt, input)
     v.x = v.x + (wx * speed - v.x) * blend
     v.z = v.z + (wz * speed - v.z) * blend
 
-    if input.jump and P.onGround then
-        v.y = JUMP_V
-        P.onGround = false
-    end
+    if input.jump and P.onGround then v.y = JUMP_V end
     v.y = v.y + GRAVITY * dt
     if v.y < -40.0 then v.y = -40.0 end
 
-    -- По осям раздельно: так игрок скользит вдоль борта, а не залипает в углу.
-    local ox = p.x
-    p.x = ox + v.x * dt
-    local hitX = deckBlocked(p.x, p.y, p.z)
-    if hitX then p.x = ox end
-    local oz = p.z
-    p.z = oz + v.z * dt
-    local hitZ = deckBlocked(p.x, p.y, p.z)
-    if hitZ then p.z = oz end
+    -- Контроллер работает в КОРАБЕЛЬНЫХ координатах: и позиция, и запрос
+    -- тверди — в них. Движку всё равно, в какой системе считать, — он ни разу
+    -- не обращается к «низу мира» иначе как через переданную скорость.
+    sage.physics.SetCharacterPosition(body, Vec3(p.x, p.y, p.z))
+    sage.physics.MoveCharacter(body, Vec3(v.x, v.y, v.z), dt)
+    local st = sage.physics.CharacterState(body)
 
-    -- Ступенька в блок: подняться на леер или на надстройку без прыжка.
-    if (hitX or hitZ) and P.onGround and wlen > 0.0001 then
-        local savedY = p.y
-        p.y = p.y + 1.02
-        if not deckBlocked(p.x, p.y, p.z) then
-            local nx = p.x + v.x * dt
-            if not deckBlocked(nx, p.y, p.z) then p.x = nx end
-            local nz = p.z + v.z * dt
-            if not deckBlocked(p.x, p.y, nz) then p.z = nz end
-            P.onGround = false
-        else
-            p.y = savedY
-        end
-    end
-    if hitX then v.x = 0.0 end
-    if hitZ then v.z = 0.0 end
-
-    local before = p.y
-    p.y = before + v.y * dt
-    if deckBlocked(p.x, p.y, p.z) then
-        p.y = before
-        if v.y < 0.0 then P.onGround = true end
-        v.y = 0.0
-    else
-        P.onGround = false
-    end
+    p.x, p.y, p.z = st.position.x, st.position.y, st.position.z
+    v.x, v.y, v.z = st.velocity.x, st.velocity.y, st.velocity.z
+    P.onGround = st.grounded
 
     -- Шаг за борт: под ногами нет корабля и мы ниже палубы — за борт.
     local wx2, wy2, wz2 = Ship.LocalToWorld(p.x, p.y, p.z)
