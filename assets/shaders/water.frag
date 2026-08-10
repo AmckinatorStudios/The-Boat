@@ -44,7 +44,6 @@ void main() {
     vec3 N = normalize(Normal);
     // Рябь наклоняет нормаль поверхности, но не трогает борта плитки.
     N = normalize(N + vec3(rippleSlope(FragPos.xz, uTime) * uRipple * vFade, 0.0).xzy);
-    if (uShadingMode == 2) { FragColor = vec4(N * 0.5 + 0.5, 1.0); return; }
 
     // Цвет воды — от впадины к гребню.
     float crest = clamp(vCrest * 0.5 + 0.5, 0.0, 1.0);
@@ -62,7 +61,17 @@ void main() {
     float sunShadow = uShadowsEnabled ? SunShadow(FragPos, N, normalize(-uSunDir)) : 0.0;
     albedo *= mix(1.0, 0.66, sunShadow);
 
-    if (uShadingMode == 1) { FragColor = vec4(albedo, vAlpha); return; }
+    // Отладочные виды движка работают и на воде. Без этого половина кадра (а
+    // здесь это океан) оставалась бы обычной в любом режиме разбора, и по
+    // картинке нельзя было бы сказать, что видно, а что просто не поддержано.
+    if (uShadingMode != 0) {
+        vec4 dbg;
+        if (DebugShade(uShadingMode, N, FragPos, albedo, 0.0, 0.08, 1.0, vec3(0.0),
+                       sunShadow, dbg)) {
+            FragColor = vec4(dbg.rgb, 1.0);
+            return;
+        }
+    }
 
     vec3 V = normalize(uViewPos - FragPos);
     float fresnel = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0);
