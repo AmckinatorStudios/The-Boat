@@ -1,83 +1,36 @@
 -- ---------------------------------------------------------------------------
--- hud.lua — интерфейс, собранный скриптом из UI-компонентов движка.
+-- hud.lua — то немногое, что видно на экране во время игры.
 --
--- Правило этого интерфейса: НЕ мешать смотреть на воду и говорить иконками.
--- Слов на экране почти нет — три шкалы со значками у левого нижнего угла,
--- панель предметов по центру, судовой журнал справа сверху. Всё на карточках
--- с мягкой тенью и вертикальным градиентом: без них панель сливается с морем,
--- и любой текст на пёстрой воде читается плохо.
+-- ПРАВИЛО ЭТОГО ЭКРАНА: на нём нет ничего, кроме того, без чего нельзя играть.
+-- Игра про то, чтобы смотреть на воду, и всё, что закрывает воду, обязано
+-- доказать своё право там находиться.
 --
--- Ни одной картинки на диске: значки — векторные иконки движка
--- (sage::ui::IconNames), имя иконки предмет несёт сам (Blocks.Icon).
+-- До этой правки на экране постоянно висели две карточки: шкалы слева и
+-- «судовой журнал» справа — время, пройденный путь, число блоков корабля,
+-- число плавающего мусора и три счётчика трюма. Одиннадцать чисел, из которых
+-- в игре не нужно НИ ОДНО: путь и число блоков ни на что не влияют, а сколько
+-- в трюме верёвки — вопрос, который возникает ровно в момент крафта, и место
+-- ответу на него на верстаке (см. craft.lua), а не в углу экрана поверх заката.
+--
+-- Осталось: прицел, три шкалы, панель предметов, часы и то, что говорит с
+-- игроком по делу — подсказка под прицелом и сообщение. Слов почти нет: игра
+-- говорит значками.
 -- ---------------------------------------------------------------------------
 local Blocks = require "blocks"
+local Inv = require "inventory"
+local U = require "ui"
+local Icons = require "blockicons"
 
 local H = {}
 
+local root
 local els = {}
-local rootless = {}        -- элементы без родителя: их подхватывает корень HUD
 local messageTimer = 0.0
 local pickTimer = 0.0      -- сколько ещё показывать имя выбранного предмета
 local lastSelected = 0
-local root
+local lastSelectedId = nil
 
--- --- Палитра ---------------------------------------------------------------
--- Ночное стекло с тёплым акцентом: холодная тёмная подложка не спорит с водой,
--- а всё, на что надо смотреть (выбранный слот, подсказка), тёплое.
-local INK       = {0.05, 0.08, 0.13}
-local INK_DEEP  = {0.02, 0.03, 0.06}
-local AMBER     = {0.99, 0.82, 0.48}
-local TEXT      = {0.95, 0.94, 0.90}
-local MUTED     = {0.68, 0.73, 0.79}
-local ALARM     = {0.96, 0.45, 0.35}
-
-local function C(rgb, a) return Vec4(rgb[1], rgb[2], rgb[3], a or 1.0) end
-
--- --- Сборка элементов ------------------------------------------------------
-
-local function newElement(name, kind, anchor, offx, offy, w, h, parent)
-    local obj = SpawnObject(name)
-    SetMeshNone(obj)
-    local ui = obj:AddUI()
-    ui.Type = kind
-    ui.Anchor = anchor
-    ui.Offset = Vec2(offx, offy)
-    ui.Size = Vec2(w, h)
-    ui.Rounding = 8.0
-    ui.Color = Vec4(0, 0, 0, 0)
-    ui.TextScale = 1.3
-    ui.TextColor = C(TEXT)
-    ui.TextCentered = false
-    ui.IconColor = C(TEXT)
-    els[name] = obj
-    if parent then obj:SetParent(parent) else rootless[#rootless + 1] = obj end
-    return obj, ui
-end
-
--- Карточка: подложка с градиентом и тенью. Всё, что живёт на экране постоянно,
--- сидит на такой — одинаковая «глубина» у всех углов интерфейса.
-local function newCard(name, anchor, offx, offy, w, h)
-    local obj, e = newElement(name, UIKind.Panel, anchor, offx, offy, w, h)
-    e.Rounding = 14.0
-    e.Color = C(INK, 0.56)
-    e.GradientColor = C(INK_DEEP, 0.44)
-    e.ShadowSize = 18.0
-    e.BorderThickness = 1.0
-    e.BorderColor = Vec4(1.0, 1.0, 1.0, 0.07)
-    return obj, e
-end
-
--- Строка «иконка + текст» внутри карточки: панель без заливки, движок сам
--- ставит иконку у левого края и сдвигает текст за неё.
-local function newRow(name, parent, x, y, w, h, icon)
-    local obj, e = newElement(name, UIKind.Panel, UIAnchor.TopLeft, x, y, w, h, parent)
-    e.Icon = icon
-    e.IconColor = C(MUTED)
-    e.TextScale = 1.2
-    e.TextColor = C(TEXT, 0.92)
-    e.PadX = 7.0
-    return obj, e
-end
+local function keep(name, obj) els[name] = obj end
 
 local function ui(name)
     local obj = els[name]
@@ -85,151 +38,129 @@ local function ui(name)
     return obj:GetUI()
 end
 
+-- Сам объект, а не его элемент: смена вида иконки (объёмная картинка вместо
+-- плоского значка) трогает и компоненты, а не только поля элемента.
+local function obj(name)
+    local o = els[name]
+    if o == nil or not o:Valid() then return nil end
+    return o
+end
+
+-- Шкалы: цел, сыт, напоён, согрет.
+--
+-- Здоровье стоит ПЕРВЫМ и рисуется шире остальных — не ради важности само по
+-- себе, а потому что это единственная шкала, по которой видно ИТОГ: три
+-- остальные показывают, что игрок делает с собой, а она — что из этого вышло.
+-- Порядок в списке = порядок снизу вверх на экране (см. Build).
 local VITALS = {
-    {"Food",  "food",  {0.92, 0.72, 0.36}, 0.20},
-    {"Water", "drop",  {0.42, 0.74, 0.94}, 0.20},
-    {"Warm",  "flame", {0.96, 0.56, 0.36}, 0.25},
+    {"Food",   "food",  {0.92, 0.72, 0.36}, 0.20},
+    {"Water",  "drop",  {0.42, 0.74, 0.94}, 0.20},
+    {"Warm",   "flame", {0.96, 0.56, 0.36}, 0.25},
+    {"Health", "heart", {0.90, 0.36, 0.38}, 0.30},
 }
 
-local SLOT, SLOT_GAP = 64, 8
+local SLOT, SLOT_GAP = 58, 8
 
 function H.Build()
-    root = SpawnObject("HUD")
-    SetMeshNone(root)
+    root = U.Screen("HUD", 0)
 
     -- --- Прицел: четыре штриха вокруг пустого центра. Точка в середине
     -- закрывала бы ровно то, во что целишься.
     local marks = {{0, -8, 2, 6}, {0, 8, 2, 6}, {-8, 0, 6, 2}, {8, 0, 6, 2}}
     for i, m in ipairs(marks) do
-        local _, e = newElement("Aim " .. i, UIKind.Panel, UIAnchor.Center, m[1], m[2], m[3], m[4])
+        local _, e = U.Panel(root, "Aim " .. i, UIAnchor.Center, m[1], m[2], m[3], m[4])
         e.Color = Vec4(1.0, 1.0, 1.0, 0.5)
-        e.Rounding = 1.0
+        e.Rounding = 0.0
     end
     -- Кольцо вокруг прицела — единственный ответ «в это можно ткнуть»; горит,
     -- только когда под прицелом действительно что-то есть.
-    local _, ring = newElement("Aim Ring", UIKind.Panel, UIAnchor.Center, 0, 0, 30, 30)
-    ring.Color = Vec4(0, 0, 0, 0)
-    ring.Rounding = 15.0
-    ring.BorderThickness = 1.5
-    ring.BorderColor = C(AMBER, 0.75)
+    -- Квадратная, а не круглая: интерфейс игры плоский и прямоугольный, и
+    -- единственное скруглённое кольцо в нём выглядело бы деталью из другой игры.
+    local ringObj, ring = U.Panel(root, "Aim Ring", UIAnchor.Center, 0, 0, 26, 26)
+    ring.Rounding = 0.0
+    ring.BorderThickness = 1.0
+    ring.BorderColor = U.C(U.AMBER, 0.75)
     ring.Visible = false
+    keep("Aim Ring", ringObj)
 
-    -- --- Шкалы: сыт, напоён, согрет. Больше в игре про уют не нужно.
-    local vitalsCard = newCard("Vitals", UIAnchor.BottomLeft, 16, 16, 248, 98)
+    -- --- Шкалы. БЕЗ КАРТОЧКИ ПОД НИМИ: подложка нужна тексту, а полосе со
+    -- своим тёмным жёлобом — нет, и четыре шкалы на карточке выглядели бы
+    -- приборной панелью там, где хватает четырёх полосок у самого края.
     for i, v in ipairs(VITALS) do
-        local y = 12 + (i - 1) * 26
-        local _, icon = newElement(v[1] .. " Icon", UIKind.Icon, UIAnchor.TopLeft,
-                                   12, y, 20, 20, vitalsCard)
-        icon.Icon = v[2]
-        icon.IconColor = C(v[3])
-
-        local _, bar = newElement(v[1] .. " Bar", UIKind.Bar, UIAnchor.TopLeft,
-                                  40, y + 3, 196, 14, vitalsCard)
-        bar.Rounding = 7.0
-        bar.Color = Vec4(0, 0, 0, 0.34)
-        bar.BarFillColor = C(v[3], 0.96)
-        bar.Value = 1.0
+        -- Смещение у нижнего якоря отсчитывается ВВЕРХ, поэтому ПОСЛЕДНЯЯ
+        -- шкала списка оказывается самой нижней. Здоровье в списке последнее и
+        -- лежит внизу — под тремя нуждами, которые на него влияют.
+        local y = 16 + (#VITALS - i) * 20
+        keep(v[1] .. " Icon",
+             U.Icon(root, v[1] .. " Icon", UIAnchor.BottomLeft, 18, y, 15, v[2], U.C(v[3])))
+        local barObj = U.Bar(root, v[1] .. " Bar", UIAnchor.BottomLeft, 40, y + 3,
+                             v[1] == "Health" and 148 or 116, 9, U.C(v[3], 0.96))
+        keep(v[1] .. " Bar", barObj)
     end
 
-    -- --- Панель предметов: квадратные слоты со значком предмета и счётчиком.
-    local total = #Blocks.hotbar * SLOT + (#Blocks.hotbar - 1) * SLOT_GAP
-    for i = 1, #Blocks.hotbar do
+    -- --- Панель предметов: квадратные слоты со значком и счётчиком.
+    -- Номеров на слотах нет: цифра на каждом — шесть подписей ради того, что
+    -- запоминается с первого нажатия.
+    local total = Inv.HOTBAR * SLOT + (Inv.HOTBAR - 1) * SLOT_GAP
+    for i = 1, Inv.HOTBAR do
         local x = -total * 0.5 + (i - 1) * (SLOT + SLOT_GAP) + SLOT * 0.5
-        local slotObj, slot = newElement("Slot " .. i, UIKind.Panel, UIAnchor.BottomCenter,
-                                         x, 18, SLOT, SLOT)
-        slot.Rounding = 12.0
-        slot.Color = C(INK, 0.52)
-        slot.GradientColor = C(INK_DEEP, 0.62)
-        slot.BorderThickness = 1.5
-        slot.BorderColor = Vec4(1.0, 1.0, 1.0, 0.10)
-        slot.ShadowSize = 12.0
-
-        local _, icon = newElement("Slot Icon " .. i, UIKind.Icon, UIAnchor.Center,
-                                   0, -5, 32, 32, slotObj)
-        icon.Icon = Blocks.Icon(Blocks.hotbar[i])
-        icon.IconColor = Vec4(1, 1, 1, 1)
-
-        -- Номер слота — бледной цифрой в углу: клавиша, которой он берётся.
-        local _, num = newElement("Slot Num " .. i, UIKind.Label, UIAnchor.TopLeft,
-                                  7, 4, 14, 12, slotObj)
-        num.Text = tostring(i)
-        num.TextScale = 0.95
-        num.TextColor = C(MUTED, 0.55)
-
-        local _, count = newElement("Slot Count " .. i, UIKind.Label, UIAnchor.BottomCenter,
-                                    0, 5, SLOT, 13, slotObj)
-        count.TextCentered = true
-        count.TextScale = 1.1
-        count.TextColor = C(TEXT, 0.9)
+        local slotObj, iconObj, countObj =
+            U.Slot(root, "Slot " .. i, UIAnchor.BottomCenter, x, 18, SLOT)
+        keep("Slot " .. i, slotObj)
+        keep("Slot " .. i .. " Icon", iconObj)
+        keep("Slot " .. i .. " Count", countObj)
     end
 
     -- Имя выбранного предмета — над панелью, гаснет само: подпись под каждым
     -- слотом одновременно превратила бы панель в стену текста.
-    local _, pick = newElement("Pick", UIKind.Label, UIAnchor.BottomCenter, 0, 18 + SLOT + 10, 320, 18)
+    local pickObj, pick = U.Label(root, "Pick", UIAnchor.BottomCenter, 0, 18 + SLOT + 10, 320, 18,
+                                  "", 1.3)
     pick.TextCentered = true
-    pick.TextScale = 1.3
-    pick.TextColor = C(AMBER, 0.0)
+    pick.TextColor = U.C(U.AMBER, 0.0)
+    keep("Pick", pickObj)
 
-    -- --- Судовой журнал: время, пройденный путь, корабль, трюм.
-    -- Строки высокие (24 px) не ради воздуха: иконка внутри строки — квадрат в
-    -- её высоту, и на двадцати пикселях компас и лодка схлопываются в кляксу.
-    local journal = newCard("Journal", UIAnchor.TopRight, 16, 16, 258, 128)
-    local _, clock = newRow("Row Clock", journal, 8, 10, 240, 24, "clock")
-    clock.TextScale = 1.3
-    clock.TextColor = C(TEXT)
-    local _, phase = newElement("Row Phase", UIKind.Icon, UIAnchor.TopRight, 10, 12, 22, 22, journal)
-    phase.Icon = "sun"
-    phase.IconColor = C(AMBER)
+    -- --- Часы: единственное число, которое игре есть смысл показывать
+    -- постоянно. Закат — то, ради чего стоит доплыть до вечера, и знать,
+    -- сколько до него осталось, — это про планы, а не про статистику.
+    local clockObj, clock = U.Label(root, "Clock", UIAnchor.TopRight, 20, 18, 78, 22, "", 1.35)
+    clock.Icon = "sun"
+    clock.IconColor = U.C(U.AMBER)
+    clock.PadX = 6.0
+    keep("Clock", clockObj)
 
-    newRow("Row Drift", journal, 8, 38, 240, 24, "compass")
-    newRow("Row Ship", journal, 8, 66, 240, 24, "boat")
-
-    -- Трюм — три значка с числами в ряд: это опись, а не предложение.
-    local hold = {{"Hold Scrap", Blocks.SCRAP}, {"Hold Rope", Blocks.ROPE},
-                  {"Hold Plastic", Blocks.PLASTIC}}
-    for i, h in ipairs(hold) do
-        local _, e = newRow(h[1], journal, 8 + (i - 1) * 80, 94, 76, 24, Blocks.Icon(h[2]))
-        e.IconColor = Blocks.Color(h[2])
-        e.TextScale = 1.15
-    end
-
-    -- --- Сообщение и подсказка -------------------------------------------
+    -- --- Сообщение и подсказка ---------------------------------------------
     -- Обе — «таблетки» с автошириной: короткое «Плыви к лодке» не должно
     -- болтаться в панели, растянутой под самую длинную фразу игры.
-    local _, msg = newElement("Message", UIKind.Panel, UIAnchor.TopCenter, 0, 64, 200, 30)
-    msg.Rounding = 15.0
+    local msgObj, msg = U.Panel(root, "Message", UIAnchor.TopCenter, 0, 56, 200, 30)
     msg.AutoWidth = true
     msg.PadX = 14.0
-    msg.Color = C(INK, 0.0)
-    msg.GradientColor = C(INK_DEEP, 0.0)
-    msg.ShadowSize = 0.0
+    msg.Color = U.C(U.INK, 0.0)
     msg.TextScale = 1.45
-    msg.TextColor = C(TEXT, 0.0)
-    msg.Icon = ""
-    msg.IconColor = C(AMBER)
+    msg.TextColor = U.C(U.TEXT, 0.0)
+    msg.IconColor = U.C(U.AMBER, 0.0)
+    keep("Message", msgObj)
 
-    local _, prompt = newElement("Prompt", UIKind.Panel, UIAnchor.Center, 0, 54, 200, 28)
-    prompt.Rounding = 14.0
+    local promptObj, prompt = U.Panel(root, "Prompt", UIAnchor.Center, 0, 54, 200, 28)
     prompt.AutoWidth = true
     prompt.PadX = 12.0
-    prompt.Color = C(INK, 0.0)
-    prompt.GradientColor = C(INK_DEEP, 0.0)
+    prompt.Color = U.C(U.INK, 0.0)
     prompt.TextScale = 1.25
-    prompt.TextColor = C(TEXT, 0.0)
-    prompt.IconColor = C(TEXT, 0.0)
+    prompt.TextColor = U.C(U.TEXT, 0.0)
+    prompt.IconColor = U.C(U.TEXT, 0.0)
+    keep("Prompt", promptObj)
 
     -- Полоса разбора — прямо под прицелом, узкая и без подложки: она живёт
     -- полсекунды, карточка под ней успела бы только мигнуть.
-    local _, bar = newElement("Break Bar", UIKind.Bar, UIAnchor.Center, 0, 30, 108, 6)
-    bar.Rounding = 3.0
-    bar.BarFillColor = C(AMBER, 0.95)
-    bar.Color = Vec4(0.0, 0.0, 0.0, 0.4)
+    local barObj, bar = U.Bar(root, "Break Bar", UIAnchor.Center, 0, 30, 108, 6, U.C(U.AMBER, 0.95))
     bar.Value = 0.0
     bar.Visible = false
+    keep("Break Bar", barObj)
+end
 
-    -- Всё, что не легло в карточку, вешаем на корень — одна сущность прячет
-    -- или показывает весь интерфейс разом.
-    for _, obj in ipairs(rootless) do obj:SetParent(root) end
+-- Спрятать худ целиком — одним полем на корне. Нужно меню и верстаку: поверх
+-- открытого экрана прицел и шкалы только мешают.
+function H.SetVisible(visible)
+    if root ~= nil and root:Valid() then root:GetUI().Visible = visible end
 end
 
 function H.Message(text, seconds, icon)
@@ -245,34 +176,31 @@ end
 -- Постоянный красный в углу — это тревога, а игра сделана ровно про её
 -- отсутствие.
 local function vitalColor(value, low, base)
-    if value >= low then return C(base, 0.96) end
+    if value >= low then return U.C(base, 0.96) end
     local t = math.max(0.0, value / low)
-    return Vec4(base[1] + (ALARM[1] - base[1]) * (1 - t),
-                base[2] + (ALARM[2] - base[2]) * (1 - t),
-                base[3] + (ALARM[3] - base[3]) * (1 - t), 0.98)
+    return Vec4(base[1] + (U.ALARM[1] - base[1]) * (1 - t),
+                base[2] + (U.ALARM[2] - base[2]) * (1 - t),
+                base[3] + (U.ALARM[3] - base[3]) * (1 - t), 0.98)
 end
 
+-- Плашка сообщения/подсказки. Плоская: заливка плюс рамка, оба гаснут вместе с
+-- текстом. Прозрачность здесь — единственная анимация в интерфейсе, и она
+-- нужна: сообщение, пропадающее кадром, читается как сбой.
 local function setPill(e, text, icon, alpha, iconColor)
     if not e then return end
     e.Text = text
     e.Icon = text ~= "" and (icon or "") or ""
-    e.Color = C(INK, 0.62 * alpha)
-    e.GradientColor = C(INK_DEEP, 0.5 * alpha)
-    e.ShadowSize = alpha > 0.05 and 12.0 or 0.0
-    e.TextColor = C(TEXT, alpha)
+    e.Color = U.C(U.INK, 0.90 * alpha)
+    e.BorderThickness = 1.0
+    e.BorderColor = U.C(U.LINE, 0.85 * alpha)
+    e.TextColor = U.C(U.TEXT, alpha)
     e.IconColor = iconColor and Vec4(iconColor.x, iconColor.y, iconColor.z, alpha)
-                            or C(AMBER, alpha)
+                            or U.C(U.AMBER, alpha)
 end
 
--- Разряды тысяч: «1 240 м» читается с одного взгляда, «1240 м» — нет.
-local function grouped(n)
-    local s = string.format("%.0f", n)
-    local out = s:reverse():gsub("(%d%d%d)", "%1 "):reverse()
-    return (out:gsub("^%s+", ""))
-end
-
-function H.Update(dt, S, P, Inv, Debris, Ship)
-    local values = {S.food / S.MAX_FOOD, S.water / S.MAX_WATER, S.warm / S.MAX_WARM}
+function H.Update(dt, S, P, Inv)
+    local values = {S.food / S.MAX_FOOD, S.water / S.MAX_WATER, S.warm / S.MAX_WARM,
+                    S.health / S.MAX_HEALTH}
     for i, v in ipairs(VITALS) do
         local bar = ui(v[1] .. " Bar")
         local icon = ui(v[1] .. " Icon")
@@ -283,76 +211,45 @@ function H.Update(dt, S, P, Inv, Debris, Ship)
         end
         -- Значок гаснет вместе со шкалой: полупустая полоса и яркий значок
         -- рядом с ней говорят разное.
-        if icon then icon.IconColor = C(v[3], 0.45 + 0.55 * math.min(1.0, value * 1.6)) end
+        if icon then icon.IconColor = U.C(v[3], 0.45 + 0.55 * math.min(1.0, value * 1.6)) end
     end
 
-    for i = 1, #Blocks.hotbar do
+    for i = 1, Inv.HOTBAR do
         local slot = ui("Slot " .. i)
-        local icon = ui("Slot Icon " .. i)
-        local count = ui("Slot Count " .. i)
-        local id = Blocks.hotbar[i]
-        local have = Inv.Count(id)
+        local count = ui("Slot " .. i .. " Count")
+        local id = Inv.SlotId(i)
+        local have = Inv.SlotCount(i)
         local selected = (i == Inv.selected)
         if slot then
-            -- Выбранный слот приподнят и обведён тёплым: рамка одна не читается
-            -- на светлой воде, а сдвиг виден боковым зрением.
-            slot.Offset = Vec2(slot.Offset.x, selected and 26 or 18)
-            slot.BorderColor = selected and C(AMBER, 0.95) or Vec4(1, 1, 1, 0.10)
-            slot.BorderThickness = selected and 2.0 or 1.5
-            slot.Color = selected and C(AMBER, 0.16) or C(INK, 0.52)
-            slot.GradientColor = selected and C(INK, 0.66) or C(INK_DEEP, 0.62)
-            slot.ShadowSize = selected and 18.0 or 12.0
+            -- Выбранный слот отмечен ТОЛЬКО цветом рамки и заливки — он больше
+            -- не приподнимается. Сдвиг ячейки ломал ровную линию панели, а
+            -- ровная линия и есть то, по чему панель читается как панель.
+            U.MarkSlot(slot, selected)
         end
-        if icon then
-            -- Пустой слот показан бледным значком, а не пустотой: место в
-            -- панели закреплено за предметом, даже когда его нет.
-            local c = Blocks.Color(id)
-            local a = have > 0 and 1.0 or 0.28
-            icon.IconColor = Vec4(c.x, c.y, c.z, a)
-        end
-        if count then
-            count.Text = have > 0 and tostring(have) or ""
-            count.TextColor = C(TEXT, 0.9)
-        end
+        U.SlotIcon(obj("Slot " .. i .. " Icon"), id, Blocks, Icons)
+        if count then count.Text = have > 1 and tostring(have) or "" end
     end
 
     -- Имя выбранного предмета всплывает на секунду после переключения.
-    if Inv.selected ~= lastSelected then
+    local selectedId = Inv.SelectedBlock()
+    if Inv.selected ~= lastSelected or selectedId ~= lastSelectedId then
         lastSelected = Inv.selected
-        pickTimer = 1.6
+        lastSelectedId = selectedId
+        pickTimer = selectedId and 1.6 or 0.0
         local p = ui("Pick")
-        if p then p.Text = Blocks.Name(Inv.SelectedBlock()) end
+        if p then p.Text = selectedId and Blocks.Name(selectedId) or "" end
     end
     local pick = ui("Pick")
     if pick then
         pickTimer = math.max(0.0, pickTimer - dt)
-        pick.TextColor = C(AMBER, math.min(1.0, pickTimer * 2.0))
+        pick.TextColor = U.C(U.AMBER, math.min(1.0, pickTimer * 2.0))
     end
 
-    local clock = ui("Row Clock")
-    if clock then clock.Text = S.Clock() end
-    local phase = ui("Row Phase")
-    if phase then
-        phase.Icon = S.IsNight() and "moon" or "sun"
-        phase.IconColor = S.IsNight() and Vec4(0.72, 0.80, 0.95, 0.95) or C(AMBER)
-    end
-    local drift = ui("Row Drift")
-    if drift then drift.Text = grouped(Ship.drift) .. " м" end
-    local ship = ui("Row Ship")
-    if ship then
-        ship.Text = string.format("%d блоков  ·  мусор %d", Ship.BlockCount(), Debris.Count())
-    end
-    local hold = {{"Hold Scrap", Blocks.SCRAP}, {"Hold Rope", Blocks.ROPE},
-                  {"Hold Plastic", Blocks.PLASTIC}}
-    for _, h in ipairs(hold) do
-        local e = ui(h[1])
-        if e then
-            local n = Inv.Count(h[2])
-            e.Text = tostring(n)
-            local c = Blocks.Color(h[2])
-            e.IconColor = Vec4(c.x, c.y, c.z, n > 0 and 1.0 or 0.35)
-            e.TextColor = C(TEXT, n > 0 and 0.92 or 0.45)
-        end
+    local clock = ui("Clock")
+    if clock then
+        clock.Text = S.Clock()
+        clock.Icon = S.IsNight() and "moon" or "sun"
+        clock.IconColor = S.IsNight() and Vec4(0.72, 0.80, 0.95, 0.95) or U.C(U.AMBER)
     end
 
     -- Подсказка под прицелом: что перед тобой и что с этим можно сделать.

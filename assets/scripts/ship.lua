@@ -311,6 +311,26 @@ local function buildStarterShip()
     set(1, 1, -3, Blocks.LANTERN)
 end
 
+-- Пересобрать ВСЕ сущности блоков по сетке.
+--
+-- Проход идёт по всему объёму, а не по занятым ячейкам, и это принципиально:
+-- пересборка нужна ровно тогда, когда сетку заменили целиком (загрузка,
+-- новая игра), и половина работы — не создать новое, а УБРАТЬ СТАРОЕ. Обход
+-- одних только cells не увидел бы ни одной опустевшей ячейки, и на палубе
+-- остались бы висеть доски, которых в сетке уже нет.
+function Ship.Rebuild()
+    for z = Ship.MIN_Z, Ship.MAX_Z do
+        for y = Ship.MIN_Y, Ship.MAX_Y do
+            for x = Ship.MIN_X, Ship.MAX_X do
+                refreshCell(x, y, z)
+            end
+        end
+    end
+    -- Паруса считаем по сетке, а не по счётчику: счётчик ведут установка и
+    -- разбор, а сетку только что заменили целиком, и он про это не знает.
+    Ship.sails = Ship.CountBlocks(Blocks.SAIL)
+end
+
 function Ship.Init()
     root = SpawnObject("Ship")
     SetMeshNone(root)
@@ -325,6 +345,23 @@ function Ship.Init()
         local z = (rest - (rest % SPAN_Y)) / SPAN_Y + Ship.MIN_Z
         refreshCell(x, y, z)
     end
+    return blockCount
+end
+
+-- Новая игра: снести всё, что построено, и выложить стартовый плот заново.
+-- Без этого «Новая игра» из меню означала бы продолжение прежней партии с
+-- обнулёнными шкалами — то есть что угодно, только не новую игру.
+function Ship.Reset()
+    for z = Ship.MIN_Z, Ship.MAX_Z do
+        for y = Ship.MIN_Y, Ship.MAX_Y do
+            for x = Ship.MIN_X, Ship.MAX_X do
+                if cells[key(x, y, z)] then Ship.SetBlock(x, y, z, AIR, true) end
+            end
+        end
+    end
+    Ship.drift = 0.0
+    buildStarterShip()
+    Ship.Rebuild()
     return blockCount
 end
 
@@ -447,6 +484,14 @@ function Ship.Restore(list)
             placed = placed + 1
         end
     end
+
+    -- И ПЕРЕСОБРАТЬ СУЩНОСТИ. Вся загрузка выше идёт «тихо» (quiet = true) —
+    -- иначе каждый из сотен блоков дёргал бы шестерых соседей, — и без этой
+    -- строки сетка оказывалась загруженной, а на экране оставался стартовый
+    -- плот: доски сохранённой лодки не имели ни одной сущности, а снесённые
+    -- продолжали висеть в воздухе вместе с фонарями. Выглядело это как «игра
+    -- не сохраняет постройки» — хотя сохраняла она их исправно.
+    Ship.Rebuild()
     return placed
 end
 

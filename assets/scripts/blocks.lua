@@ -24,6 +24,12 @@ Blocks.LANTERN  = 10  -- фонарь: светит ночью
 Blocks.PURIFIER = 11  -- опреснитель: делает пресную воду
 Blocks.NET      = 12  -- сеть-уловитель: сама притягивает мусор
 Blocks.PLANTER  = 13  -- грядка
+-- Рабочие места. Отличаются от остальных блоков ровно одним: у каждого свой
+-- экран, который открывается по E (см. stations.lua). Всё прочее — обычные
+-- блоки палубы: их ставят, ломают и они держат игрока.
+Blocks.FURNACE  = 14  -- печка: топливо + то, что жарим
+Blocks.BENCH    = 15  -- верстак: рецепты
+Blocks.CHEST    = 16  -- сундук: место под вещи
 
 -- --- Предметы (только в инвентаре) -----------------------------------------
 Blocks.SCRAP    = 20  -- доски и щепа с воды
@@ -34,6 +40,9 @@ Blocks.FISH     = 24
 Blocks.SEAWEED  = 25
 Blocks.WATER    = 26  -- пресная вода
 Blocks.ROD      = 27  -- удочка (инструмент)
+Blocks.CHARCOAL = 28  -- уголь: из обломков в печке, лучшее топливо
+Blocks.COOKED   = 29  -- жареная рыба
+Blocks.DRIED    = 30  -- сушёные водоросли
 
 -- icon — имя векторной иконки движка (sage::ui::IconNames). Здесь, а не в
 -- худе: иконка описывает ПРЕДМЕТ, ровно как его имя и цвет, и должна ехать
@@ -55,6 +64,15 @@ local D = {
     [Blocks.PURIFIER] = {name = "Опреснитель", icon = "purifier", color = {0.55, 0.62, 0.66}, solid = true,  opaque = true,  hard = 0.8,  place = true},
     [Blocks.NET]      = {name = "Сеть",        icon = "net",      color = {0.72, 0.70, 0.52}, solid = true,  opaque = false, hard = 0.35, place = true},
     [Blocks.PLANTER]  = {name = "Грядка",      icon = "leaf",     color = {0.30, 0.42, 0.24}, solid = true,  opaque = true,  hard = 0.5,  place = true},
+    -- station — имя экрана, который открывает E. Поле здесь, а не списком в
+    -- stations.lua, по той же причине, что и icon: это свойство ПРЕДМЕТА, и
+    -- заводить новый рабочий стол в двух местах не придётся.
+    [Blocks.FURNACE]  = {name = "Печка",       icon = "flame",    color = {0.42, 0.40, 0.38}, solid = true,  opaque = true,  hard = 1.0,  place = true, station = "furnace",
+                         about = "Жарит и сушит. Нужно топливо."},
+    [Blocks.BENCH]    = {name = "Верстак",     icon = "hammer",   color = {0.66, 0.47, 0.26}, solid = true,  opaque = true,  hard = 0.8,  place = true, station = "bench",
+                         about = "Здесь собирают всё остальное."},
+    [Blocks.CHEST]    = {name = "Сундук",      icon = "crate",    color = {0.58, 0.40, 0.22}, solid = true,  opaque = true,  hard = 0.7,  place = true, station = "chest",
+                         about = "Двадцать семь мест под вещи."},
 
     -- предметы
     [Blocks.SCRAP]    = {name = "Обломки",     icon = "plank",    color = {0.60, 0.44, 0.28}},
@@ -65,6 +83,23 @@ local D = {
     [Blocks.SEAWEED]  = {name = "Водоросли",   icon = "leaf",     color = {0.30, 0.52, 0.32}, food = 12.0},
     [Blocks.WATER]    = {name = "Вода",        icon = "drop",     color = {0.55, 0.80, 0.92}, drink = 35.0},
     [Blocks.ROD]      = {name = "Удочка",      icon = "rod",      color = {0.72, 0.62, 0.40}, tool = true},
+    -- fuel — сколько СЕКУНД горения даёт одна штука в печке.
+    [Blocks.CHARCOAL] = {name = "Уголь",       icon = "flame",    color = {0.18, 0.17, 0.16}, fuel = 60.0,
+                         about = "Горит вдесятеро дольше досок."},
+    [Blocks.COOKED]   = {name = "Жареная рыба",icon = "fish",     color = {0.80, 0.55, 0.34}, food = 58.0},
+    [Blocks.DRIED]    = {name = "Сушёные водоросли", icon = "leaf", color = {0.42, 0.44, 0.24}, food = 26.0},
+}
+
+-- Топливо, у которого нет своего поля fuel: обычные вещи, которые просто горят.
+-- Отдельной таблицей, а не полем в D, намеренно — «доска горит 8 секунд» это
+-- свойство ПЕЧКИ, а не доски, и печка одна, а досок много.
+local FUEL = {
+    [Blocks.CHARCOAL] = 60.0,
+    [Blocks.PLANK]    = 12.0,
+    [Blocks.SCRAP]    = 8.0,
+    [Blocks.BEAM]     = 16.0,
+    [Blocks.CLOTH]    = 4.0,
+    [Blocks.SEAWEED]  = 3.0,
 }
 
 local AIR_DEF = {name = "Пусто", icon = "cross", solid = false, opaque = false}
@@ -114,6 +149,23 @@ function Blocks.Food(id)
     return d and d.food
 end
 
+-- Сколько секунд горит одна штука в печке (nil — не горит).
+function Blocks.Fuel(id) return FUEL[id] end
+
+-- Имя экрана, который открывается по E на этом блоке (nil — обычный блок).
+function Blocks.Station(id)
+    local d = D[id]
+    return d and d.station
+end
+
+-- Одна строка о том, зачем вещь нужна. Показывается в подсказке под именем;
+-- у большинства предметов её нет — «Доска» и так понятна, и придумывать
+-- описание ради описания значит забить подсказку шумом.
+function Blocks.About(id)
+    local d = D[id]
+    return d and d.about
+end
+
 function Blocks.Drink(id)
     local d = D[id]
     return d and d.drink
@@ -124,11 +176,5 @@ function Blocks.Color(id)
     if not d or not d.color then return Vec3(1, 0, 1) end
     return Vec3(d.color[1], d.color[2], d.color[3])
 end
-
--- Что кладут в хотбар по умолчанию — в порядке слотов.
-Blocks.hotbar = {
-    Blocks.PLANK, Blocks.RAIL, Blocks.WALL,
-    Blocks.LANTERN, Blocks.NET, Blocks.PURIFIER,
-}
 
 return Blocks

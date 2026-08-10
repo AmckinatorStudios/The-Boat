@@ -19,6 +19,7 @@
 local Blocks = require "blocks"
 local Ocean = require "ocean"
 local Ship = require "ship"
+local Hand = require "hand"
 
 local P = {}
 
@@ -73,10 +74,6 @@ function P.WorldPos()
     return Ship.LocalToWorld(P.pos.x, P.pos.y, P.pos.z)
 end
 
-local function deckBlocked(x, y, z)
-    return Ship.BoxBlocked(x - HALF_W, y, z - HALF_W, x + HALF_W, y + HEIGHT, z + HALF_W)
-end
-
 function P.Init(deps)
     Inv = deps.inventory
     hooks = deps.hooks or {}
@@ -117,6 +114,21 @@ function P.Init(deps)
     -- не даёт теней на том, во что смотришь, и сцена выглядит плоской.
     P.flashlight.Transform.Position = Vec3(0.18, -0.16, 0.0)
     P.flashlightOn = false
+
+    -- Контроллер персонажа движка со СВОИМ миром: твердь — воксельная палуба
+    -- корабля (см. moveOnDeck). Высота шага 0.6 — как в майнкрафте: на леер и
+    -- полублок всходят шагом, на целый блок надо прыгать. Больше нельзя: с
+    -- шагом в блок игрок «зашагивает» на стену любой высоты.
+    sage.physics.SetCharacterShape(body, {
+        radius = HALF_W, height = HEIGHT, step = 0.6, mass = 70.0,
+    })
+    sage.physics.SetCharacterWorld(body, function(x0, y0, z0, x1, y1, z1)
+        return Ship.BoxBlocked(x0, y0, z0, x1, y1, z1)
+    end)
+
+    -- Рука в кадре. Дочерняя камере, как и фонарик, и по той же причине: за
+    -- взглядом её доворачивает иерархия, а не скрипт (см. hand.lua).
+    Hand.Build(cam)
 
     P.Apply()
 end
@@ -186,18 +198,25 @@ P.ClimbAboard = climbAboard
 -- Застрявший навсегда игрок — худшее, что может случиться в игре, из которой
 -- нельзя проиграть, поэтому выход есть всегда: сперва вверх, а если и там
 -- сплошняк — на нос, на свободное место.
-local function unstick(p)
-    if not deckBlocked(p.x, p.y, p.z) then return end
-    for _ = 1, 12 do
-        p.y = p.y + 0.25
-        if not deckBlocked(p.x, p.y, p.z) then return end
-    end
-    p.x, p.y, p.z = 0.0, 1.0, 5.0
-end
-
+-- Ходьба по палубе идёт КОНТРОЛЛЕРОМ ПЕРСОНАЖА ДВИЖКА (sage.physics), а не
+-- своими руками.
+--
+-- Мир корабля в физике не лежит и лежать не должен: палуба — воксельная сетка,
+-- собранная этим же скриптом, и она качается вместе с корпусом, то есть живёт
+-- в корабельных координатах. Заводить на каждый кубик кинематическое тело
+-- значило бы держать тысячу тел и двигать их все каждый кадр.
+--
+-- Поэтому контроллеру отдан НАШ мир: движок спрашивает «занят ли этот объём»,
+-- отвечает Ship.BoxBlocked, а всю ходьбу — упор в стену, скольжение вдоль
+-- борта, ступеньку, опору, выталкивание из тверди — ведёт движок. Здесь
+-- остаются только правила игры: разгон, бег, приседание, прыжок и тяготение.
+--
+-- Раньше всё это было написано здесь, и здесь же жил баг: «ступенька»
+-- поднимала игрока на блок и оставляла наверху, ничего не проверив, — держа W
+-- у отвесной стены, он взбирался на любую высоту. У движка подъём ограничен
+-- высотой шага, свободой над головой и обязательной посадкой на опору.
 local function moveOnDeck(dt, input)
     local p, v = P.pos, P.vel
-    unstick(p)
 
     local fx, _, fz = P.ForwardFlat()
     local rx, _, rz = P.RightFlat()
@@ -215,49 +234,20 @@ local function moveOnDeck(dt, input)
     v.x = v.x + (wx * speed - v.x) * blend
     v.z = v.z + (wz * speed - v.z) * blend
 
-    if input.jump and P.onGround then
-        v.y = JUMP_V
-        P.onGround = false
-    end
+    if input.jump and P.onGround then v.y = JUMP_V end
     v.y = v.y + GRAVITY * dt
     if v.y < -40.0 then v.y = -40.0 end
 
-    -- По осям раздельно: так игрок скользит вдоль борта, а не залипает в углу.
-    local ox = p.x
-    p.x = ox + v.x * dt
-    local hitX = deckBlocked(p.x, p.y, p.z)
-    if hitX then p.x = ox end
-    local oz = p.z
-    p.z = oz + v.z * dt
-    local hitZ = deckBlocked(p.x, p.y, p.z)
-    if hitZ then p.z = oz end
+    -- Контроллер работает в КОРАБЕЛЬНЫХ координатах: и позиция, и запрос
+    -- тверди — в них. Движку всё равно, в какой системе считать, — он ни разу
+    -- не обращается к «низу мира» иначе как через переданную скорость.
+    sage.physics.SetCharacterPosition(body, Vec3(p.x, p.y, p.z))
+    sage.physics.MoveCharacter(body, Vec3(v.x, v.y, v.z), dt)
+    local st = sage.physics.CharacterState(body)
 
-    -- Ступенька в блок: подняться на леер или на надстройку без прыжка.
-    if (hitX or hitZ) and P.onGround and wlen > 0.0001 then
-        local savedY = p.y
-        p.y = p.y + 1.02
-        if not deckBlocked(p.x, p.y, p.z) then
-            local nx = p.x + v.x * dt
-            if not deckBlocked(nx, p.y, p.z) then p.x = nx end
-            local nz = p.z + v.z * dt
-            if not deckBlocked(p.x, p.y, nz) then p.z = nz end
-            P.onGround = false
-        else
-            p.y = savedY
-        end
-    end
-    if hitX then v.x = 0.0 end
-    if hitZ then v.z = 0.0 end
-
-    local before = p.y
-    p.y = before + v.y * dt
-    if deckBlocked(p.x, p.y, p.z) then
-        p.y = before
-        if v.y < 0.0 then P.onGround = true end
-        v.y = 0.0
-    else
-        P.onGround = false
-    end
+    p.x, p.y, p.z = st.position.x, st.position.y, st.position.z
+    v.x, v.y, v.z = st.velocity.x, st.velocity.y, st.velocity.z
+    P.onGround = st.grounded
 
     -- Шаг за борт: под ногами нет корабля и мы ниже палубы — за борт.
     local wx2, wy2, wz2 = Ship.LocalToWorld(p.x, p.y, p.z)
@@ -370,6 +360,15 @@ local function interact(dt, input)
     if input.usePressed and P.aimDebris and hooks.CollectDebris then
         hooks.CollectDebris(P.aimDebris)
         P.aimDebris = nil
+        Hand.Swing(false)   -- багром машут один раз, а не непрерывно
+        return
+    end
+
+    -- E по рабочему месту открывает его экран. ПОСЛЕ мусора и до разбора: багор
+    -- важнее (см. выше), а ломать печку тем же нажатием, которым её открывают,
+    -- нельзя — разбор висит на другой кнопке и на удержании.
+    if input.usePressed and hit and Blocks.Station(hit.id) and hooks.UseStation then
+        hooks.UseStation(Blocks.Station(hit.id), hit.x, hit.y, hit.z)
         return
     end
 
@@ -381,6 +380,7 @@ local function interact(dt, input)
         P.breakTarget = {x = hit.x, y = hit.y, z = hit.z}
         local hardness = Blocks.Hardness(hit.id)
         if hardness then
+            Hand.Swing(true)   -- пока ломаем — рука качается
             P.breakProgress = P.breakProgress + dt
             if P.breakProgress >= hardness then
                 P.breakProgress = 0.0
@@ -391,22 +391,67 @@ local function interact(dt, input)
     else
         P.breakProgress = 0.0
         P.breakTarget = nil
+        Hand.StopSwing()
     end
 
     if input.placePressed and not P.overboard then
-        local id = Inv.SelectedBlock()
+        -- Ставится то, что В РУКЕ, и тратится ИМЕННО ОНО: раньше блок
+        -- списывался «из общего запаса» (Inv.Remove по виду), и стопка в руке
+        -- могла остаться нетронутой, пока таяла другая в трюме.
+        local slot = Inv.selected
+        local id = Inv.SlotId(slot)
         local bx, by, bz = placementCell(hit, P.pos.x, P.pos.y + EYE, P.pos.z, ldx, ldy, ldz)
-        if bx and id and Inv.Count(id) > 0 and Blocks.IsPlaceable(id) then
+        if bx and id and Blocks.IsPlaceable(id) then
             local p = P.pos
             local intersects = not (bx + 1 <= p.x - HALF_W or bx >= p.x + HALF_W or
                                     bz + 1 <= p.z - HALF_W or bz >= p.z + HALF_W or
                                     by + 1 <= p.y or by >= p.y + HEIGHT)
             if not intersects and Ship.PlaceBlock(bx, by, bz, id) then
-                Inv.Remove(id, 1)
+                Inv.RemoveFromSlot(slot, 1)
+                Hand.Swing(false)
                 if hooks.OnPlace then hooks.OnPlace(bx, by, bz, id) end
             end
         end
     end
+end
+
+-- --- Поза: сохранение и сброс ----------------------------------------------
+--
+-- Где стоял и куда смотрел — часть прогресса, а не мелочь оформления. Без неё
+-- загрузка ставила игрока на нос лицом вперёд, кто бы и где бы ни вышел из
+-- игры: человек закрывал её сидя в каюте у фонаря, а возвращался на ветреный
+-- нос — и первым делом шёл обратно.
+function P.Snapshot()
+    return {x = P.pos.x, y = P.pos.y, z = P.pos.z,
+            yaw = P.yaw, pitch = P.pitch, overboard = P.overboard}
+end
+
+function P.Restore(d)
+    if type(d) ~= "table" then return end
+    if d.x and d.y and d.z then P.pos.x, P.pos.y, P.pos.z = d.x, d.y, d.z end
+    P.vel.x, P.vel.y, P.vel.z = 0, 0, 0
+    -- Координаты игрока — корабельные, ПОКА он на палубе, и мировые за бортом
+    -- (см. заголовок файла). Восстановить одну позицию и забыть про этот флаг
+    -- значит поставить пловца в те же числа, но в другой системе координат:
+    -- он оказался бы внутри корпуса или в километре от лодки.
+    P.overboard = d.overboard == true
+    if d.yaw then P.SetLook(d.yaw, d.pitch or P.pitch) end
+    P.Apply()
+end
+
+-- Новая игра: снова на носу, лицом в открытое море.
+function P.Reset()
+    P.pos.x, P.pos.y, P.pos.z = 0.0, 1.0, 5.0
+    P.vel.x, P.vel.y, P.vel.z = 0, 0, 0
+    P.yaw, P.pitch = 180.0, -3.0
+    P.overboard = false
+    P.onGround = false
+    P.breakProgress = 0.0
+    P.breakTarget = nil
+    P.target = nil
+    P.aimDebris = nil
+    if P.flashlight ~= nil and P.flashlight:Valid() and P.flashlightOn then P.ToggleFlashlight() end
+    P.Apply()
 end
 
 function P.Update(dt, input)
@@ -415,8 +460,13 @@ function P.Update(dt, input)
 
     if P.overboard then swim(dt, input) else moveOnDeck(dt, input) end
     interact(dt, input)
+    Hand.Update(dt, P, Inv)
     P.Apply()
 end
+
+-- Руку прячут вместе с худом: поверх открытого меню или верстака она мешает
+-- ровно так же, как прицел.
+function P.SetHandVisible(visible) Hand.SetVisible(visible) end
 
 P.EYE_HEIGHT = EYE
 P.REACH = REACH

@@ -13,6 +13,7 @@
 -- ---------------------------------------------------------------------------
 local Blocks = require "blocks"
 local Ocean = require "ocean"
+local Stations = require "stations"
 
 local A = {}
 
@@ -27,7 +28,11 @@ local target = nil
 local built, dismantled = 0, 0
 local checklist = {gather = false, craft = false, build = false,
                    dismantle = false, eat = false, lantern = false,
-                   flashlight = false}
+                   flashlight = false, stations = false, smelt = false,
+                   chest = false}
+-- Куда поставлены печка и сундук прогона и сколько уже ждём уголь.
+local furnaceAt, chestAt = nil, nil
+local smeltWait = 0.0
 
 A.NEED_SCRAP = 8
 A.NEED_BUILD = 4
@@ -35,7 +40,7 @@ A.NEED_PLASTIC = 2
 
 local STATE_LIMIT = {
     gather = 180.0, craft = 8.0, build = 90.0, dismantle = 45.0,
-    lantern = 60.0, idle = 1e9,
+    lantern = 60.0, stations = 8.0, smelt = 60.0, done = 8.0, idle = 1e9,
 }
 
 local function setState(next)
@@ -57,7 +62,7 @@ local function blankInput()
         lookX = 0.0, lookY = 0.0,
         breakHeld = false, placePressed = false, usePressed = false,
         eatPressed = false, drinkPressed = false, fishPressed = false,
-        craft = nil, cycleSlot = false,
+        craft = nil,
     }
 end
 
@@ -176,6 +181,19 @@ local function nextBuildCell()
     return nil
 end
 
+-- Свободная клетка НА палубе под рабочее место. Ищем на слое y=1, то есть
+-- поверх настила: печка, вкопанная в пол, ничем не отличалась бы от доски.
+local function stationSpot()
+    for z = 2, 9 do
+        for x = -2, 2 do
+            if Ship.Get(x, 1, z) == Blocks.AIR and Ship.Get(x, 0, z) ~= Blocks.AIR then
+                return x, 1, z
+            end
+        end
+    end
+    return nil
+end
+
 local function build(input, dt)
     if built >= A.NEED_BUILD then return true end
     if Inv.Count(Blocks.PLANK) <= 0 then return true end -- доски кончились: не тупик
@@ -183,10 +201,10 @@ local function build(input, dt)
     local cell = nextBuildCell()
     if cell == nil then return true end
 
-    -- Слот с доской.
-    for i, id in ipairs(Inv.hotbar) do
-        if id == Blocks.PLANK then Inv.Select(i) end
-    end
+    -- Взять доску в руку. Ячейки инвентаря больше не закреплены за видами
+    -- блоков — доска лежит там, куда её положил Add, — поэтому спрашиваем
+    -- инвентарь, а не перебираем список видов.
+    Inv.SelectItem(Blocks.PLANK)
 
     -- Крадучись у самого борта: полным шагом бот проскакивает край носа по
     -- инерции и оказывается в воде — вместо стройки начинается заплыв.
@@ -245,14 +263,16 @@ end
 local function placeLantern(input, dt)
     if Inv.Count(Blocks.LANTERN) <= 0 then
         if Inv.CanCraft(Inv.FindRecipe("lantern")) then
-            input.craft = 4
+            -- ИМЕНЕМ рецепта, а не номером. Номер здесь стоял четвёркой и
+            -- означал фонарь ровно до того дня, когда в список добавили
+            -- верстак: после этого автопрогон честно крафтил стену и столь же
+            -- честно сообщал, что фонарей на палубе меньше двух.
+            input.craft = "lantern"
             return false
         end
         return true -- нет материалов: не повод считать прогон сломанным
     end
-    for i, id in ipairs(Inv.hotbar) do
-        if id == Blocks.LANTERN then Inv.Select(i) end
-    end
+    Inv.SelectItem(Blocks.LANTERN)
 
     local cell = nil
     for z = -1, 3 do
@@ -383,10 +403,62 @@ function A.Update(dt)
         checklist.flashlight = (P.flashlightOn ~= flashlightWasOn)
         log("THEBOAT: фонарик переключён, включён=" .. tostring(P.flashlightOn))
         log("THEBOAT: фонарей на палубе: " .. Ship.CountBlocks(Blocks.LANTERN))
+        setState("stations")
+
+    -- Рабочие места. Прогон ставит печку и сундук, растапливает печку и кладёт
+    -- вещь в сундук — то есть проверяет то, из-за чего они и заведены: что
+    -- состояние живёт в КЛЕТКЕ, что печка тикает сама, что сундук хранит.
+    --
+    -- Экраны при этом не открываются: они собраны из тех же слотов, что и
+    -- трюм, и мышью их проверяет человек. Здесь проверяется механика, которая
+    -- работает и с закрытым экраном, — а её без прогона не проверит никто.
+    elseif state == "stations" then
+        local fx, fy, fz = stationSpot()
+        if fx and Ship.PlaceBlock(fx, fy, fz, Blocks.FURNACE) then
+            local st = Stations.At(fx, fy, fz, "furnace")
+            st.input = {id = Blocks.SCRAP, n = 2}
+            st.fuel = {id = Blocks.PLANK, n = 1}
+            furnaceAt = {fx, fy, fz}
+        end
+        local cx, cy, cz = stationSpot()
+        if cx and Ship.PlaceBlock(cx, cy, cz, Blocks.CHEST) then
+            local st = Stations.At(cx, cy, cz, "chest")
+            Stations.SetChestSlot(st, 1, {id = Blocks.ROPE, n = 3})
+            chestAt = {cx, cy, cz}
+        end
+        checklist.stations = furnaceAt ~= nil and chestAt ~= nil
+        log("THEBOAT: поставлены печка и сундук: " .. tostring(checklist.stations))
+        setState("smelt")
+
+    elseif state == "smelt" then
+        -- Ждём, пока печка выдаст уголь. Ровно тем же ходом времени, что и у
+        -- игрока: никакого «домотать» — проверяется, что она топится сама.
+        smeltWait = smeltWait + dt
+        local st = furnaceAt and Stations.At(furnaceAt[1], furnaceAt[2], furnaceAt[3]) or nil
+        local got = st and st.output and st.output.id == Blocks.CHARCOAL
+        if got or smeltWait > 40.0 then
+            checklist.smelt = got == true
+            log("THEBOAT: печка выдала уголь: " .. tostring(checklist.smelt) ..
+                (st and (" (осталось топлива " .. string.format("%.0f", st.burn) .. " с)") or ""))
+
+            -- И сундук: содержимое обязано пережить разбор блока и вернуться
+            -- игроку. Потерянный сундук — самая дорогая тихая пропажа в игре.
+            local ropeBefore = Inv.Count(Blocks.ROPE)
+            if chestAt then
+                Stations.Drain(chestAt[1], chestAt[2], chestAt[3],
+                               function(id, n) return Inv.Add(id, n) end)
+            end
+            checklist.chest = Inv.Count(Blocks.ROPE) >= ropeBefore + 3
+            log("THEBOAT: сундук вернул содержимое: " .. tostring(checklist.chest))
+            setState("done")
+        end
+
+    elseif state == "done" then
         -- Итог прогона: что из систем реально сработало.
         local ok = checklist.gather and checklist.craft and checklist.build
                    and checklist.dismantle and checklist.lantern
-                   and checklist.flashlight
+                   and checklist.flashlight and checklist.stations
+                   and checklist.smelt and checklist.chest
         log(string.format("THEBOAT: LIVING ABOARD — выловлено %d, палуба %d блоков, путь %.0f м",
             Debris.Collected(), Ship.BlockCount(), Ship.drift))
         if ok then log("THEBOAT: ROUTINE OK") else log("THEBOAT: FAIL не все действия удались") end
