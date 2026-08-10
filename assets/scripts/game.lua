@@ -19,6 +19,8 @@ local Debris = require "debris"
 local S      = require "survival"
 local Inv    = require "inventory"
 local HUD    = require "hud"
+local St     = require "stations"
+local SUI    = require "stationui"
 local Craft  = require "craft"
 local Menu   = require "menu"
 local Icons  = require "blockicons"
@@ -83,7 +85,7 @@ local function blankInput()
         breakHeld = false, placePressed = false, usePressed = false,
         flashlightPressed = false,
         eatPressed = false, drinkPressed = false, fishPressed = false,
-        craft = nil,
+        craft = nil,   -- ИМЯ рецепта (не номер: номера съезжают, см. autopilot)
     }
 end
 
@@ -123,7 +125,7 @@ end
 -- два (верстак и меню), и если бы каждый захватывал и отпускал её сам, закрытие
 -- одного поверх другого возвращало бы обзор посреди открытого экрана.
 local function applyCursor()
-    SetMouseCaptured(not (Menu.IsOpen() or Craft.IsOpen()))
+    SetMouseCaptured(not (Menu.IsOpen() or Craft.IsOpen() or SUI.IsOpen()))
 end
 
 -- Худ и рука прячутся вместе: и то и другое — «интерфейс игры», и поверх
@@ -162,6 +164,18 @@ local function onBreak(x, y, z, id)
     -- Разобранный блок возвращается материалом: разбирать свой корабль — такой
     -- же законный способ добыть доску, как выловить её из воды.
     Inv.Add(id, 1)
+
+    -- Сломали рабочее место — отдаём и то, что в нём лежало. Сундук, уносящий
+    -- с собой содержимое, — самая дорогая потеря, которую игра может устроить
+    -- молча; а забыть про печку с рыбой внутри легко и без злого умысла.
+    if Blocks.Station(id) then
+        if SUI.IsOpen() then SUI.Close() end
+        local lost = St.Drain(x, y, z, function(itemId, n) return Inv.Add(itemId, n) end)
+        if #lost > 0 then
+            HUD.Message("Трюм полон — часть содержимого пропала", 3.0, "warn")
+        end
+    end
+
     HUD.Message("Разобрано: " .. Blocks.Name(id), 1.6, Blocks.Icon(id))
     structureDirty = true
     if autopilot then autopilot.NoteBroken() end
@@ -220,6 +234,7 @@ local function saveProgress()
     if not started then return false end
     return sage.save.Write(saveSlot or "main", {
         ship      = Ship.Snapshot(),
+        stations  = St.Snapshot(),
         inventory = Inv.Snapshot(),
         survival  = S.Snapshot(),
         player    = P.Snapshot(),
@@ -235,6 +250,7 @@ local function loadProgress(slot)
     local saved = sage.save.Read(slot)
     if not saved then return nil end
     local blocks = Ship.Restore(saved.ship)
+    St.Restore(saved.stations)
     Inv.Restore(saved.inventory)
     S.Restore(saved.survival)
     P.Restore(saved.player)
@@ -255,6 +271,7 @@ end
 local function newGame()
     sage.save.Delete(saveSlot)
     local blocks = Ship.Reset()
+    St.Reset()
     Inv.Reset()
     S.Reset()
     P.Reset()
@@ -336,6 +353,12 @@ function OnStart(entity)
             OnOverboard = onOverboard, OnAboard = onAboard,
             AimDebris = function(...) return Debris.Aim(...) end,
             CollectDebris = onCollectDebris,
+            UseStation = function(kind, x, y, z)
+                if SUI.Open(kind, x, y, z) then
+                    setHudVisible(false)
+                    applyCursor()
+                end
+            end,
         },
     }
     Debris.Init{seed = seed}
@@ -347,6 +370,9 @@ function OnStart(entity)
     Icons.Build()
 
     HUD.Build()
+    -- Экраны рабочих мест ДО трюма: трюм берёт у них общую плашку-подсказку, а
+    -- она заводится при их сборке.
+    SUI.Build{inventory = Inv, onMessage = HUD.Message}
     Craft.Build{inventory = Inv, onMessage = HUD.Message}
     Menu.Build{
         HasSave = function() return sage.save.Exists(saveSlot) end,
@@ -394,7 +420,8 @@ function OnStart(entity)
         -- и ждать от него щелчка по «Новая игра» значило бы либо учить его
         -- мыши, либо остановить CI на первом же кадре.
         HUD.Message("Океан во все стороны. Лови, что несёт течением.", 7.0, "compass")
-    elseif screenArg == "craft" or screenArg == "game" then
+    elseif screenArg == "craft" or screenArg == "game"
+           or screenArg == "furnace" or screenArg == "bench" or screenArg == "chest" then
         -- «Сразу играть», минуя меню: прогресс при этом всё равно грузится —
         -- пропуск экрана запуска не должен незаметно означать новую партию.
         if loadProgress(saveSlot) then
@@ -403,7 +430,35 @@ function OnStart(entity)
         else
             HUD.Message("Океан во все стороны. Лови, что несёт течением.", 7.0, "compass")
         end
-        if screenArg == "craft" then Craft.SetOpen(true) end
+        if screenArg == "craft" then
+            Craft.SetOpen(true)
+        elseif screenArg == "furnace" or screenArg == "bench" or screenArg == "chest" then
+            -- Снять кадр рабочего места, не строя его руками. Ставим блок на
+            -- палубу рядом с игроком и открываем — тем же путём, что и по E,
+            -- а не «показать экран»: проверять надо то, что увидит игрок,
+            -- вместе с постановкой блока и его состоянием.
+            local bx, by, bz = 0, 1, 3
+            for dz = 0, 6 do
+                if Ship.Get(bx, by, bz + dz) == Blocks.AIR
+                   and Ship.PlaceBlock(bx, by, bz + dz, Blocks.BENCH) then
+                    bz = bz + dz
+                    break
+                end
+            end
+            local id = (screenArg == "furnace" and Blocks.FURNACE)
+                       or (screenArg == "chest" and Blocks.CHEST) or Blocks.BENCH
+            Ship.SetBlock(bx, by, bz, id)
+            -- Печку сразу заряжаем: пустая печка на снимке выглядит одинаково и
+            -- когда она работает, и когда сломана, — а проверять надо именно
+            -- работу. Рыба и доски кладутся тем же путём, что и мышью.
+            if screenArg == "furnace" then
+                local st = St.At(bx, by, bz, "furnace")
+                st.input = {id = Blocks.FISH, n = 3}
+                st.fuel = {id = Blocks.PLANK, n = 2}
+            end
+            SUI.Open(screenArg, bx, by, bz)
+            setHudVisible(false)
+        end
     else
         -- Заглавное меню. Мир за ним уже построен и живёт: игра про воду не
         -- должна начинаться с чёрного экрана со списком кнопок.
@@ -451,7 +506,7 @@ local function handleActions(dt, input)
     -- Намерение «скрафтить» осталось ради автопилота: он играет теми же
     -- намерениями, что человек — мышью. Путь при этом ОДИН и тот же (Craft),
     -- иначе прогон проверял бы не то, чем пользуются люди.
-    if input.craft then Craft.CraftIndex(input.craft) end
+    if input.craft then Craft.CraftById(input.craft) end
 
     if input.eatPressed then
         local id, value = Inv.EatBest()
@@ -515,6 +570,7 @@ end
 local function startPlaying()
     Menu.Close()
     Craft.SetOpen(false)
+    SUI.Close()
     setHudVisible(true)
     applyCursor()
 end
@@ -558,7 +614,13 @@ end
 local function handleScreenKeys()
     if WasActionPressed("Inventory") then
         if Menu.IsOpen() then
-            -- Из меню верстак не открываем: сперва вернись в игру.
+            -- Из меню трюм не открываем: сперва вернись в игру.
+        elseif SUI.IsOpen() then
+            -- TAB на открытом рабочем месте закрывает ЕГО, а не открывает трюм
+            -- поверх: инвентарь и так виден в нижней половине каждого из них.
+            SUI.Close()
+            setHudVisible(true)
+            applyCursor()
         else
             Craft.Toggle()
             setHudVisible(not Craft.IsOpen())
@@ -567,7 +629,10 @@ local function handleScreenKeys()
     end
 
     if WasActionPressed("Menu") then
-        if Craft.IsOpen() then
+        if SUI.IsOpen() then
+            SUI.Close()
+            setHudVisible(true)
+        elseif Craft.IsOpen() then
             Craft.SetOpen(false)
             setHudVisible(true)
         elseif Menu.State() == "pause" then
@@ -609,7 +674,7 @@ function OnUpdate(entity, dt)
 
     local input
     if autopilot then input = autopilot.Update(dt)
-    elseif inTitle or Craft.IsOpen() then input = blankInput()
+    elseif inTitle or Craft.IsOpen() or SUI.IsOpen() then input = blankInput()
     else input = readInput() end
 
     -- Порядок: вода -> корабль -> игрок -> мусор. Каждый следующий стоит на
@@ -644,7 +709,11 @@ function OnUpdate(entity, dt)
         structureDirty = false
     end
 
+    -- Печки тикают ВСЕГДА, а не только при открытом экране: в этом весь смысл
+    -- печки — поставить, растопить и заняться другим делом.
+    St.Update(dt)
     Craft.Update(dt)
+    SUI.Update(dt)
     HUD.Update(dt, S, P, Inv)
 
     if inTitle then return end

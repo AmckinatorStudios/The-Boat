@@ -364,6 +364,14 @@ local function interact(dt, input)
         return
     end
 
+    -- E по рабочему месту открывает его экран. ПОСЛЕ мусора и до разбора: багор
+    -- важнее (см. выше), а ломать печку тем же нажатием, которым её открывают,
+    -- нельзя — разбор висит на другой кнопке и на удержании.
+    if input.usePressed and hit and Blocks.Station(hit.id) and hooks.UseStation then
+        hooks.UseStation(Blocks.Station(hit.id), hit.x, hit.y, hit.z)
+        return
+    end
+
     if hit and input.breakHeld then
         if P.breakTarget and (P.breakTarget.x ~= hit.x or P.breakTarget.y ~= hit.y
                               or P.breakTarget.z ~= hit.z) then

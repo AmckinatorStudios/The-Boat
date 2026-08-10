@@ -5,7 +5,7 @@
 -- майнкрафте (три грани разом), при боковом свете. Дальше эта картинка
 -- показывается в слоте инвентаря обычным изображением интерфейса.
 --
--- Зачем так, а не набором нарисованных значков. Блоков в игре четырнадцать, и
+-- Зачем так, а не набором нарисованных значков. Блоков в игре под два десятка, и
 -- каждый — цветной куб; рисовать под них четырнадцать спрайтов значит завести
 -- вторую копию палитры, которая разъедется с первой при первой же правке
 -- цвета. Здесь иконка берётся из ТОГО ЖЕ определения блока, что и сам блок на
@@ -45,8 +45,10 @@ local function everyId()
     for _, id in ipairs({Blocks.PLANK, Blocks.BEAM, Blocks.RAIL, Blocks.WALL, Blocks.ROOF,
                          Blocks.MAST, Blocks.SAIL, Blocks.BARREL, Blocks.CRATE, Blocks.LANTERN,
                          Blocks.PURIFIER, Blocks.NET, Blocks.PLANTER,
+                         Blocks.FURNACE, Blocks.BENCH, Blocks.CHEST,
                          Blocks.SCRAP, Blocks.ROPE, Blocks.CLOTH, Blocks.PLASTIC,
-                         Blocks.FISH, Blocks.SEAWEED, Blocks.WATER, Blocks.ROD}) do
+                         Blocks.FISH, Blocks.SEAWEED, Blocks.WATER, Blocks.ROD,
+                         Blocks.CHARCOAL, Blocks.COOKED, Blocks.DRIED}) do
         if id then ids[#ids + 1] = id end
     end
     return ids
@@ -73,6 +75,11 @@ function I.Build()
             if Blocks.IsLight(id) then
                 r.Emissive = Vec3(1.0, 0.72, 0.34)
                 r.EmissiveStrength = 1.2
+            elseif id == Blocks.FURNACE then
+                -- Печка на иконке светится устьем: без этого её кубик серый и
+                -- в ряду ящиков не отличается от камня.
+                r.Emissive = Vec3(1.0, 0.45, 0.15)
+                r.EmissiveStrength = 0.5
             end
 
             local cam = SpawnObject("Icon Cam " .. tostring(id))

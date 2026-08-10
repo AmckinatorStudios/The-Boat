@@ -46,11 +46,17 @@ local function obj(name)
     return o
 end
 
--- Шкалы: сыт, напоён, согрет. Больше в игре про уют не нужно.
+-- Шкалы: цел, сыт, напоён, согрет.
+--
+-- Здоровье стоит ПЕРВЫМ и рисуется шире остальных — не ради важности само по
+-- себе, а потому что это единственная шкала, по которой видно ИТОГ: три
+-- остальные показывают, что игрок делает с собой, а она — что из этого вышло.
+-- Порядок в списке = порядок снизу вверх на экране (см. Build).
 local VITALS = {
-    {"Food",  "food",  {0.92, 0.72, 0.36}, 0.20},
-    {"Water", "drop",  {0.42, 0.74, 0.94}, 0.20},
-    {"Warm",  "flame", {0.96, 0.56, 0.36}, 0.25},
+    {"Food",   "food",  {0.92, 0.72, 0.36}, 0.20},
+    {"Water",  "drop",  {0.42, 0.74, 0.94}, 0.20},
+    {"Warm",   "flame", {0.96, 0.56, 0.36}, 0.25},
+    {"Health", "heart", {0.90, 0.36, 0.38}, 0.30},
 }
 
 local SLOT, SLOT_GAP = 58, 8
@@ -64,29 +70,31 @@ function H.Build()
     for i, m in ipairs(marks) do
         local _, e = U.Panel(root, "Aim " .. i, UIAnchor.Center, m[1], m[2], m[3], m[4])
         e.Color = Vec4(1.0, 1.0, 1.0, 0.5)
-        e.Rounding = 1.0
+        e.Rounding = 0.0
     end
     -- Кольцо вокруг прицела — единственный ответ «в это можно ткнуть»; горит,
     -- только когда под прицелом действительно что-то есть.
-    local ringObj, ring = U.Panel(root, "Aim Ring", UIAnchor.Center, 0, 0, 30, 30)
-    ring.Rounding = 15.0
-    ring.BorderThickness = 1.5
+    -- Квадратная, а не круглая: интерфейс игры плоский и прямоугольный, и
+    -- единственное скруглённое кольцо в нём выглядело бы деталью из другой игры.
+    local ringObj, ring = U.Panel(root, "Aim Ring", UIAnchor.Center, 0, 0, 26, 26)
+    ring.Rounding = 0.0
+    ring.BorderThickness = 1.0
     ring.BorderColor = U.C(U.AMBER, 0.75)
     ring.Visible = false
     keep("Aim Ring", ringObj)
 
     -- --- Шкалы. БЕЗ КАРТОЧКИ ПОД НИМИ: подложка нужна тексту, а полосе со
-    -- своим тёмным жёлобом — нет, и три шкалы на карточке выглядели приборной
-    -- панелью там, где хватает трёх полосок у самого края.
+    -- своим тёмным жёлобом — нет, и четыре шкалы на карточке выглядели бы
+    -- приборной панелью там, где хватает четырёх полосок у самого края.
     for i, v in ipairs(VITALS) do
-        -- Смещение у нижнего якоря отсчитывается ВВЕРХ, поэтому первая шкала
-        -- списка оказывается самой верхней: сытость, вода, тепло сверху вниз.
-        local y = 16 + (#VITALS - i) * 22
+        -- Смещение у нижнего якоря отсчитывается ВВЕРХ, поэтому ПОСЛЕДНЯЯ
+        -- шкала списка оказывается самой нижней. Здоровье в списке последнее и
+        -- лежит внизу — под тремя нуждами, которые на него влияют.
+        local y = 16 + (#VITALS - i) * 20
         keep(v[1] .. " Icon",
-             U.Icon(root, v[1] .. " Icon", UIAnchor.BottomLeft, 18, y, 16, v[2], U.C(v[3])))
-        local barObj, bar = U.Bar(root, v[1] .. " Bar", UIAnchor.BottomLeft, 40, y + 3, 116, 10,
-                                  U.C(v[3], 0.96))
-        bar.ShadowSize = 8.0
+             U.Icon(root, v[1] .. " Icon", UIAnchor.BottomLeft, 18, y, 15, v[2], U.C(v[3])))
+        local barObj = U.Bar(root, v[1] .. " Bar", UIAnchor.BottomLeft, 40, y + 3,
+                             v[1] == "Health" and 148 or 116, 9, U.C(v[3], 0.96))
         keep(v[1] .. " Bar", barObj)
     end
 
@@ -124,22 +132,18 @@ function H.Build()
     -- Обе — «таблетки» с автошириной: короткое «Плыви к лодке» не должно
     -- болтаться в панели, растянутой под самую длинную фразу игры.
     local msgObj, msg = U.Panel(root, "Message", UIAnchor.TopCenter, 0, 56, 200, 30)
-    msg.Rounding = 15.0
     msg.AutoWidth = true
     msg.PadX = 14.0
     msg.Color = U.C(U.INK, 0.0)
-    msg.GradientColor = U.C(U.INK_DEEP, 0.0)
     msg.TextScale = 1.45
     msg.TextColor = U.C(U.TEXT, 0.0)
     msg.IconColor = U.C(U.AMBER, 0.0)
     keep("Message", msgObj)
 
     local promptObj, prompt = U.Panel(root, "Prompt", UIAnchor.Center, 0, 54, 200, 28)
-    prompt.Rounding = 14.0
     prompt.AutoWidth = true
     prompt.PadX = 12.0
     prompt.Color = U.C(U.INK, 0.0)
-    prompt.GradientColor = U.C(U.INK_DEEP, 0.0)
     prompt.TextScale = 1.25
     prompt.TextColor = U.C(U.TEXT, 0.0)
     prompt.IconColor = U.C(U.TEXT, 0.0)
@@ -179,20 +183,24 @@ local function vitalColor(value, low, base)
                 base[3] + (U.ALARM[3] - base[3]) * (1 - t), 0.98)
 end
 
+-- Плашка сообщения/подсказки. Плоская: заливка плюс рамка, оба гаснут вместе с
+-- текстом. Прозрачность здесь — единственная анимация в интерфейсе, и она
+-- нужна: сообщение, пропадающее кадром, читается как сбой.
 local function setPill(e, text, icon, alpha, iconColor)
     if not e then return end
     e.Text = text
     e.Icon = text ~= "" and (icon or "") or ""
-    e.Color = U.C(U.INK, 0.62 * alpha)
-    e.GradientColor = U.C(U.INK_DEEP, 0.5 * alpha)
-    e.ShadowSize = alpha > 0.05 and 12.0 or 0.0
+    e.Color = U.C(U.INK, 0.90 * alpha)
+    e.BorderThickness = 1.0
+    e.BorderColor = U.C(U.LINE, 0.85 * alpha)
     e.TextColor = U.C(U.TEXT, alpha)
     e.IconColor = iconColor and Vec4(iconColor.x, iconColor.y, iconColor.z, alpha)
                             or U.C(U.AMBER, alpha)
 end
 
 function H.Update(dt, S, P, Inv)
-    local values = {S.food / S.MAX_FOOD, S.water / S.MAX_WATER, S.warm / S.MAX_WARM}
+    local values = {S.food / S.MAX_FOOD, S.water / S.MAX_WATER, S.warm / S.MAX_WARM,
+                    S.health / S.MAX_HEALTH}
     for i, v in ipairs(VITALS) do
         local bar = ui(v[1] .. " Bar")
         local icon = ui(v[1] .. " Icon")
@@ -213,13 +221,10 @@ function H.Update(dt, S, P, Inv)
         local have = Inv.SlotCount(i)
         local selected = (i == Inv.selected)
         if slot then
-            -- Выбранный слот приподнят и обведён тёплым: рамка одна не читается
-            -- на светлой воде, а сдвиг виден боковым зрением.
-            slot.Offset = Vec2(slot.Offset.x, selected and 26 or 18)
-            slot.BorderColor = selected and U.C(U.AMBER, 0.95) or Vec4(1, 1, 1, 0.10)
-            slot.BorderThickness = selected and 2.0 or 1.5
-            slot.Color = selected and U.C(U.AMBER, 0.16) or U.C(U.INK, 0.55)
-            slot.GradientColor = selected and U.C(U.INK, 0.66) or U.C(U.INK_DEEP, 0.62)
+            -- Выбранный слот отмечен ТОЛЬКО цветом рамки и заливки — он больше
+            -- не приподнимается. Сдвиг ячейки ломал ровную линию панели, а
+            -- ровная линия и есть то, по чему панель читается как панель.
+            U.MarkSlot(slot, selected)
         end
         U.SlotIcon(obj("Slot " .. i .. " Icon"), id, Blocks, Icons)
         if count then count.Text = have > 1 and tostring(have) or "" end

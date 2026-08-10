@@ -39,15 +39,26 @@ local slots = {}
 
 Inv.selected = 1
 
--- Рецепты — данные, а не код. Клавиш у них больше нет: крафт переехал на
--- верстак (см. craft.lua), где видно, что из чего делается и чего не хватает.
+-- Рецепты — данные, а не код.
+--
+-- basic — доступен голыми руками, то есть прямо в трюме по TAB. Всё остальное
+-- собирают на ВЕРСТАКЕ (см. stationui.lua), и это не бюрократия: верстак —
+-- первая вещь, ради которой игрок идёт что-то строить, и если бы с рук делалось
+-- всё, строить его было бы незачем. Список basic намеренно короткий и ведёт
+-- ровно к нему: доска, а из досок — верстак.
 Inv.recipes = {
-    {id = "plank",    name = "Доска",
+    {id = "plank",    name = "Доска",      basic = true,
      cost = {{Blocks.SCRAP, 2}},                       give = {Blocks.PLANK, 1}},
+    {id = "bench",    name = "Верстак",    basic = true,
+     cost = {{Blocks.PLANK, 4}},                       give = {Blocks.BENCH, 1}},
     {id = "rail",     name = "Леер",
      cost = {{Blocks.SCRAP, 1}, {Blocks.ROPE, 1}},     give = {Blocks.RAIL, 2}},
     {id = "wall",     name = "Стена",
      cost = {{Blocks.SCRAP, 3}},                       give = {Blocks.WALL, 2}},
+    {id = "furnace",  name = "Печка",
+     cost = {{Blocks.SCRAP, 6}, {Blocks.PLASTIC, 1}},  give = {Blocks.FURNACE, 1}},
+    {id = "chest",    name = "Сундук",
+     cost = {{Blocks.PLANK, 5}},                       give = {Blocks.CHEST, 1}},
     {id = "lantern",  name = "Фонарь",
      cost = {{Blocks.SCRAP, 2}, {Blocks.PLASTIC, 2}},  give = {Blocks.LANTERN, 1}},
     {id = "net",      name = "Сеть",
@@ -241,7 +252,7 @@ end
 -- превращалось в выбор блюда из меню.
 function Inv.EatBest()
     local best, bestVal = nil, 0
-    for _, id in ipairs({Blocks.FISH, Blocks.SEAWEED}) do
+    for _, id in ipairs({Blocks.COOKED, Blocks.FISH, Blocks.DRIED, Blocks.SEAWEED}) do
         local food = Blocks.Food(id)
         if food and Inv.Count(id) > 0 and food > bestVal then best, bestVal = id, food end
     end
